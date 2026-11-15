@@ -1,0 +1,76 @@
+# =============================================================================
+# Mini-SOAR — Docker Desktop on WINDOWS (no Kali needed)
+#
+#   Use with:   .\start.ps1            (or run.bat)
+#   Same as:    docker compose -f docker-compose.windows.yml up -d
+#
+# Differences from docker-compose.yml (the Linux / Kali version):
+#   * No `network_mode: host`. Docker Desktop containers reach the VirtualBox
+#     lab through Windows' network (NAT), so NETWORK_MODE=nat in .env makes the
+#     scanner use TCP connect scans (no ARP, no raw SYN, OS from banners).
+#   * The API publishes port 8000 to Windows so the dashboard can reach it.
+#   * data/ and audit/ live in Docker volumes (not on the F: drive): SQLite
+#     and the audit file lock work reliably there. secrets/ stays a read-only
+#     folder mount so you can see and back up the SSH key.
+# =============================================================================
+x-engine: &engine
+  image: mini-soar-engine:latest
+  build:
+    context: .
+    dockerfile: scanner/Dockerfile
+  env_file: .env
+  environment:
+    NETWORK_MODE: nat
+  volumes:
+    - minisoar-data:/app/data
+    - minisoar-audit:/app/audit
+    - ./reports/out:/app/reports/out
+    - ./secrets:/app/secrets:ro
+
+services:
+
+  scanner:
+    <<: *engine
+    command: ["scan", "--scope", "env"]
+    restart: "no"
+    profiles: ["tools"]          # run on demand: .\start.ps1 scan
+
+  soar:
+    <<: *engine
+    entrypoint: ["python", "-m", "soar.worker"]
+    restart: unless-stopped
+
+  api:
+    <<: *engine
+    entrypoint: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  honeypot:
+    build:
+      context: .
+      dockerfile: honeypot/Dockerfile
+    env_file: .env
+    ports:
+      - "2222:2222"   # fake SSH
+      - "8081:8081"   # fake HTTP
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-auto}
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
+    env_file: .env
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  minisoar-data:
+  minisoar-audit:

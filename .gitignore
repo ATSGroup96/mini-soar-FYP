@@ -1,0 +1,37 @@
+# --- secrets / env ---
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*_id_ed25519
+*_id_rsa
+
+# --- local data ---
+data/
+*.sqlite
+*.sqlite-journal
+reports/out/
+audit/*.log
+logs/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# --- node / next.js ---
+node_modules/
+dashboard/.next/
+dashboard/out/
+dashboard/build/
+npm-debug.log*
+
+# --- os / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

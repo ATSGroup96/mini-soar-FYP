@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0b0f17;
+  color: #e5edff;
+}
+
+/* thin scrollbars that match the dark theme */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #273349;
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@layer components {
+  .card {
+    @apply bg-panel border border-edge rounded-xl p-4;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium
+           bg-panel2 border border-edge hover:border-accent transition-colors;
+  }
+  .btn-primary {
+    @apply bg-accent text-white border-accent hover:opacity-90;
+  }
+  .btn-danger {
+    @apply bg-critical text-white border-critical hover:opacity-90;
+  }
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold;
+  }
+  .th {
+    @apply text-left text-xs font-semibold uppercase tracking-wide text-muted px-3 py-2;
+  }
+  .td {
+    @apply px-3 py-2 text-sm border-t border-edge/60;
+  }
+}
