@@ -48,3 +48,44 @@ def seal_secret(secret: str) -> str:
 
 def open_secret(sealed: str) -> str:
     return decrypt(sealed).decode()
+
+
+# --- recovery (run on the engine machine) ------------------------------------
+def reset(email: str) -> bool:
+    """
+    Remove a user's 2FA so they can enrol again (lost phone, deleted entry).
+    Only possible on the engine machine, which holds the service key:
+        python -m soar.totp_2fa reset someone@example.com
+    """
+    from common.audit import log_event
+    from common.db import get_service_client
+    client = get_service_client()
+    if not client:
+        raise RuntimeError("Supabase is not configured")
+    rows = client.table("profiles").select("id,email").eq("email", email).execute().data
+    if not rows:
+        return False
+    client.table("profiles").update(
+        {"totp_secret": None, "totp_enrolled": False}).eq("id", rows[0]["id"]).execute()
+    log_event("admin-cli", "totp.reset", email)
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    import sys
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) == 2 and argv[0] == "reset":
+        try:
+            done = reset(argv[1])
+        except RuntimeError as e:
+            print(e)
+            return 1
+        print(f"2FA removed for {argv[1]}. Open Settings -> Enroll TOTP 2FA and scan the new QR."
+              if done else f"No user with email {argv[1]}.")
+        return 0 if done else 1
+    print("usage: python -m soar.totp_2fa reset <email>")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

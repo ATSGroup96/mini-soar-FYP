@@ -15,6 +15,9 @@
   .\run.bat check  <ip>            test if a host is ready for auto-fix (changes nothing)
   .\run.bat logs [service]         live log: api (default), soar, honeypot, dashboard
   .\run.bat stop                   stop everything
+  .\run.bat test                   run the automated test suite (tests\)
+  .\run.bat train                  train the ML risk model again
+  .\run.bat totp-reset <email>     remove a user's 2FA so they can enrol again
 
   start.ps1 / run.bat call this script automatically when .env says NETWORK_MODE=native.
 #>
@@ -178,6 +181,9 @@ if (($Command -eq "update") -or -not (Test-Path $Py) -or -not (Test-Path $DepsMa
   if ($LASTEXITCODE -ne 0) { Bad "PyTorch install failed (internet?)"; exit 1 }
   & $Py -m pip install -r requirements.txt
   if ($LASTEXITCODE -ne 0) { Bad "Python packages install failed"; exit 1 }
+  # optional package (web push): a failure here must not stop the launcher
+  & $Py -m pip install -r requirements-push.txt --quiet
+  if ($LASTEXITCODE -ne 0) { Warn "pywebpush not installed: push notifications stay off (everything else works)" }
   Set-Content -Path $DepsMark -Value (Get-Date -Format s)
   Ok "Python packages installed"
 }
@@ -195,6 +201,23 @@ if ($Command -eq "enroll" -or $Command -eq "check") {
   if ($Command -eq "check") { & $Py -m soar.enroll $Arg1 --check-only }
   elseif ($Arg2)            { & $Py -m soar.enroll $Arg1 --admin-user $Arg2 }
   else                      { & $Py -m soar.enroll $Arg1 }
+  exit $LASTEXITCODE
+}
+
+# --- one-off tools (no services needed) ---------------------------------------
+if ($Command -eq "test") {
+  & $Py -c "import pytest" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "-- installing the test tools (pytest)"
+    & $Py -m pip install -r requirements-dev.txt --quiet
+  }
+  & $Py -m pytest
+  exit $LASTEXITCODE
+}
+if ($Command -eq "train") { & $Py -m ml.train; exit $LASTEXITCODE }
+if ($Command -eq "totp-reset") {
+  if (-not $Arg1) { Write-Host "usage: .\run.bat totp-reset <email>"; exit 1 }
+  & $Py -m soar.totp_2fa reset $Arg1
   exit $LASTEXITCODE
 }
 
@@ -280,18 +303,32 @@ if ($healthy) { Ok "API healthy" } else { Bad "API not answering (.\run.bat logs
 
 & $Py -m scanner.cli show-scope | Select-Object -First 9
 
-if ($Command -eq "update") {
-  Write-Host "-- syncing CVEs for the software found in the lab"
-  & $Py -m intel.cli sync-cpe
-}
-
-if ($Command -eq "scan" -or $Command -eq "update") {
+function Invoke-Scan {
   if ($Arg1) {
     Write-Host "-- scanning $Arg1"
     & $Py -m scanner.cli scan --targets $Arg1
   } else {
     Write-Host "-- scanning the whole authorized scope (a few minutes)"
     & $Py -m scanner.cli scan
+  }
+}
+
+if ($Command -eq "update") {
+  Write-Host "-- syncing CVE data: CISA KEV, EPSS, and CVEs for the software found in the lab"
+  & $Py -m intel.cli sync-lab
+  Write-Host "-- ML risk model (trained once, about a minute)"
+  & $Py -m ml.train --if-missing
+}
+
+if ($Command -eq "scan" -or $Command -eq "update") {
+  Invoke-Scan
+  if ($Command -eq "update") {
+    # software seen for the first time has no CVE data yet: fetch it, scan again
+    & $Py -m intel.cli sync-new
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "-- new CVE data arrived for software found by the scan: scanning once more"
+      Invoke-Scan
+    }
   }
 }
 

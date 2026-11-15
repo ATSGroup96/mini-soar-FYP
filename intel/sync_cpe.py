@@ -86,7 +86,17 @@ def _candidates(match_string: str) -> list[str]:
     return out
 
 
-def sync(cpes: list[str] | None = None) -> int:
+def _known_products(conn) -> set[str]:
+    return {r["product"] for r in conn.execute("select distinct product from cpe_match")}
+
+
+def sync(cpes: list[str] | None = None, only_missing: bool = False) -> int:
+    """
+    Download the CVEs for the lab's software. With only_missing=True, only for
+    products the local database has no record of yet (used right after a first
+    scan, so its software gets CVEs without a second manual update).
+    Returns the number of CVE records stored.
+    """
     init_db()
     s = get_settings()
     headers = {"apiKey": s.nvd_api_key} if s.nvd_api_key else {}
@@ -94,6 +104,16 @@ def sync(cpes: list[str] | None = None) -> int:
 
     raw = cpes if cpes else cpes_from_scans()
     targets = sorted({m for m in (_to_match_string(c) for c in raw) if m})
+    if only_missing and targets:
+        conn = get_intel_db()
+        try:
+            known = _known_products(conn)
+        finally:
+            conn.close()
+        targets = [t for t in targets if t.split(":")[4] not in known]
+        if not targets:
+            print("CVE data is already present for all software found in the lab.")
+            return 0
     if not targets:
         print("No CPEs found. Run a scan first.")
         return 0

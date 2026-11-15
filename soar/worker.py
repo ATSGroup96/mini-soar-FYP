@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from common.config import assert_authorized_to_run, get_settings
 from common.db import get_service_client
 from common.audit import log_event
+from common.notify import notify
 from common import syslog_logger as slog
 from . import remediation
 from .verify import verify_fix
@@ -41,7 +42,7 @@ def _execute_row(client, row: dict) -> None:
         }).eq("id", rid).execute()
         log_event("engine", "remediation.plan_refused", asset_ip or "",
                   {"remediation_id": rid, "error": str(e)[:300]})
-        _notify(client, "high", "Remediation refused", str(e)[:200], "/remediation")
+        notify(client, "high", "Remediation refused", str(e)[:200], "/remediation")
         return
 
     client.table("remediations").update({"status": "executing"}).eq("id", rid).execute()
@@ -59,7 +60,7 @@ def _execute_row(client, row: dict) -> None:
         # a refused gate or an SSH login failure changed nothing
         if isinstance(e, remediation.CommandFailed) and not get_settings().force_dry_run:
             _auto_rollback(client, rid, plan, msg)
-        _notify(client, "high", "Remediation failed",
+        notify(client, "high", "Remediation failed",
                 f"{plan.description}: {str(e)[:200]}", "/remediation")
         return
 
@@ -81,7 +82,7 @@ def _execute_row(client, row: dict) -> None:
         if row.get("ticket_id"):
             client.table("tickets").update({"status": "resolved"}).eq(
                 "id", row["ticket_id"]).execute()
-        _notify(client, "info", "Remediation applied and verified",
+        notify(client, "info", "Remediation applied and verified",
                 f"{plan.description} — verified fixed", "/remediation")
         slog.send(f"remediation {rid} succeeded and verified", slog.NOTICE)
     else:
@@ -90,7 +91,7 @@ def _execute_row(client, row: dict) -> None:
         if row.get("ticket_id"):
             client.table("tickets").update({"status": "in_progress"}).eq(
                 "id", row["ticket_id"]).execute()
-        _notify(client, "medium", "Remediation not verified — rolled back",
+        notify(client, "medium", "Remediation not verified — rolled back",
                 f"{plan.description}: fix did not verify; rollback "
                 f"{'done' if rb else 'FAILED, check host'}", "/remediation")
 
@@ -110,14 +111,6 @@ def _auto_rollback(client, rid: str, plan, why: str, previous: str = "") -> bool
         log_event("engine", "remediation.auto_rollback.error", plan.target_ip,
                   {"remediation_id": rid, "error": str(e)[:300]})
         return False
-
-
-def _notify(client, level, title, body, link):
-    try:
-        client.table("notifications").insert(
-            {"level": level, "title": title, "body": body, "link": link}).execute()
-    except Exception:
-        pass
 
 
 def _resolve_asset_ip(client, row: dict) -> str | None:

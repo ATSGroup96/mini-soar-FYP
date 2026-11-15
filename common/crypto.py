@@ -1,7 +1,10 @@
 """
-AES-256-GCM encryption + HMAC-SHA256 request signing for the scanner->cloud
-uplink. Scan results are encrypted at rest/in transit and every payload sent
-to the cloud carries an HMAC signature the receiver verifies.
+AES-256-GCM encryption + HMAC-SHA256 signing for scan results.
+
+Every scan bundle is stored encrypted (AES-256-GCM) together with an HMAC
+signature. The signature is checked whenever a stored bundle is read back
+(scanner/uplink.py: load_bundle / verify_stored_bundles), so a file that was
+edited, swapped or produced with another key is rejected.
 """
 from __future__ import annotations
 
@@ -68,13 +71,21 @@ def sign_payload(body: bytes, timestamp: int | None = None) -> dict:
 
 
 def verify_signature(body: bytes, timestamp: str, signature: str,
-                     max_skew_seconds: int = 300) -> bool:
+                     max_skew_seconds: int | None = 300) -> bool:
+    """
+    True only if the signature was made with our HMAC key over this exact
+    timestamp + body. `max_skew_seconds` rejects old (replayed) messages; pass
+    None when checking a bundle stored on disk, where age does not matter.
+    """
     key = get_settings().hmac_key.encode()
+    if not key:
+        return False  # no key configured -> nothing can be trusted
     try:
-        if abs(int(time.time()) - int(timestamp)) > max_skew_seconds:
-            return False  # replay / stale
-    except ValueError:
+        age = abs(int(time.time()) - int(timestamp))
+    except (TypeError, ValueError):
         return False
-    expected = hmac.new(key, timestamp.encode() + b"." + body,
+    if max_skew_seconds is not None and age > max_skew_seconds:
+        return False  # replay / stale
+    expected = hmac.new(key, str(timestamp).encode() + b"." + body,
                         hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(expected, str(signature or ""))

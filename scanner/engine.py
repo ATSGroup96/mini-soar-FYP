@@ -101,6 +101,9 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
             "os_guess": hs.os_guess, "os_accuracy": hs.os_accuracy,
             "services": services, "tls": certs,
             "default_creds": [vars(c) for c in creds],
+            # False when nmap failed or timed out: "no open ports" then proves
+            # nothing, and the upload / ticket steps leave this host untouched
+            "scan_ok": hs.scan_ok,
         }
 
         _try_cve_match(host_result)   # Part 3 (optional)
@@ -117,6 +120,8 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
             "live_hosts": len(host_results),
             "open_services": sum(len(h["services"]) for h in host_results),
             "default_cred_hits": sum(len(h["default_creds"]) for h in host_results),
+            # hosts whose port scan failed or timed out (nothing is closed for them)
+            "failed_hosts": sum(1 for h in host_results if not h.get("scan_ok", True)),
             "duration_sec": round(finished - started, 1),
         },
     }
@@ -135,6 +140,15 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
         scan_meta["summary"]["tickets_escalated"] = escalated
     except Exception as e:
         log_event("engine", "ticketing.error", "", {"error": str(e)[:200]})
+
+    # the scan row was written before the ticket step: store the final summary
+    if result.get("scan_id"):
+        try:
+            from common.db import get_service_client
+            get_service_client().table("scans").update(
+                {"summary": scan_meta["summary"]}).eq("id", result["scan_id"]).execute()
+        except Exception:
+            pass
 
     log_event("engine", "scan.finish", scope, scan_meta["summary"])
     slog.send(f"=== SCAN DONE {scan_meta['summary']} ===", slog.NOTICE)

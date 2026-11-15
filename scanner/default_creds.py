@@ -93,23 +93,34 @@ def _check_ftp(ip: str, port: int) -> CredFinding | None:
 
 
 def _check_http_basic(ip: str, port: int) -> CredFinding | None:
+    """
+    HTTP Basic-auth check, in two steps:
+      1. ask for the page with NO password. Only a page that answers
+         "401 + WWW-Authenticate: Basic" is password-protected; anything else
+         (public page, login form, redirect) is skipped, so a normal website is
+         never reported as "accepts admin/admin".
+      2. try each default pair; the first one that is no longer refused
+         (not 401/403) is the finding.
+    """
     import requests
     from requests.auth import HTTPBasicAuth
     scheme = "https" if port in (443, 8443) else "http"
     url = f"{scheme}://{ip}:{port}/"
+    opts = {"timeout": CONNECT_TIMEOUT, "verify": False, "allow_redirects": False}
+    try:
+        first = requests.get(url, **opts)
+    except Exception:
+        return None  # not reachable / not HTTP
+    challenge = first.headers.get("WWW-Authenticate", "")
+    if first.status_code != 401 or "basic" not in challenge.lower():
+        return None
     for user, pwd in DEFAULT_CREDS:
         try:
-            r = requests.get(url, auth=HTTPBasicAuth(user, pwd),
-                             timeout=CONNECT_TIMEOUT, verify=False)
-            # only meaningful if the endpoint actually challenged for auth
-            if r.status_code == 200 and "www-authenticate" not in {
-                k.lower() for k in r.request.headers
-            }:
-                continue
-            if r.status_code in (200, 301, 302) and r.history:
-                return CredFinding(ip, port, "http", user, pwd)
+            r = requests.get(url, auth=HTTPBasicAuth(user, pwd), **opts)
         except Exception:
             break
+        if r.status_code not in (401, 403) and r.status_code < 500:
+            return CredFinding(ip, port, "http", user, pwd)
     return None
 
 

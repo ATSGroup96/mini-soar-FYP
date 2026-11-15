@@ -29,6 +29,20 @@ export default function AuditPage() {
             </div>
           </div>
         )}
+        {verify?.bundles && (
+          <div className={`card flex items-center gap-3 ${verify.bundles.bad.length ? "border-critical/40" : "border-low/40"}`}>
+            {verify.bundles.bad.length ? <ShieldAlert className="text-critical" /> : <ShieldCheck className="text-low" />}
+            <div>
+              <div className="font-semibold text-sm">
+                {verify.bundles.bad.length ? "A stored scan result was changed" : "Stored scan results verified"}
+              </div>
+              <div className="text-xs text-muted">
+                {verify.bundles.ok} of {verify.bundles.checked} encrypted scan bundles passed their HMAC signature check.
+                {verify.bundles.bad.map((b: string) => <div key={b} className="text-critical">{b}</div>)}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="card p-0 overflow-hidden">
           <table className="w-full">
             <thead className="bg-panel2">

@@ -8,6 +8,9 @@ REM    run.bat enroll <ip> [admin]  prepare a lab host for auto-fix
 REM    run.bat check <ip>           test a host
 REM    run.bat logs [service]       live logs
 REM    run.bat stop                 stop everything
+REM    run.bat test                 run the automated tests (native mode)
+REM    run.bat train                train the ML risk model again
+REM    run.bat totp-reset <email>   remove a user's 2FA so they can enrol again
 REM  Works for both Windows modes (.env NETWORK_MODE=nat -> Docker Desktop,
 REM  NETWORK_MODE=native -> no Docker). It only exists so PowerShell's script
 REM  policy does not get in the way.

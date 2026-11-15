@@ -121,3 +121,22 @@ NETWORK_MODE=native: engine runs directly on Windows (Python 3.11 .venv + Nmap/N
 logs in logs\ via common/svc.py, taskkill /T on stop). common/filelock.py (fcntl/msvcrt) for scan + audit locks;
 scope_store reads Windows adapters via PowerShell Get-NetIPAddress; netmode.nmap_scanner() finds nmap.exe / NMAP_PATH.
 Guide: docs/WINDOWS_NATIVE.md. Not run here: real Windows PC.
+
+## v10 (2026-11-15): tests, bug fixes, proposal alignment
+tests/ (pytest, 421 cases; `run.bat test`; conftest switches off python-dotenv, replaces Supabase with
+tests/fakes.FakeSupabase and only allows loopback sockets; tests/ssh_server.py = real paramiko SSH server on
+loopback). Fixed: failed/timed-out port scan no longer closes anything (HostScan.scan_ok, nmap XML timedout flag,
+SCAN_HOST_TIMEOUT default 300 s; uplink + ticketing skip such hosts); SSH honeypot now subclasses
+paramiko.ServerInterface (before: crashed on get_banner, recorded nothing); HTTP default-cred check (401 + Basic
+challenge first); matcher (versionEndExcluding / StartExcluding flags in cpe_match, "4.7p1" = 4.7, letter patch
+levels, unknown version = unconfirmed); PDF report MITRE mapping gets services, only open findings; ml reasons no
+longer pile up. Added: risk_history + asset_changes tables (migration 004; writes are skipped quietly on an older
+DB), change detection (new_asset / port_opened / port_closed / version_changed), CVE watchlist UI + alert + ticket,
+common/notify.py + common/webpush.py (pywebpush, VAPID keys via `python -m common.webpush gen-keys`),
+uplink.load_bundle / verify_stored_bundles (HMAC check of stored bundles; /audit/verify returns "bundles"),
+/health returns model / intel / push status (Settings "Engine status"), TOTP re-enrol needs a current code +
+`python -m soar.totp_2fa reset <email>`, intel.cli sync-lab / sync-new, ml.train --if-missing, launcher commands
+test / train / totp-reset, .env.example. Honeypot: internal source = always alert, private IPs never sent to
+reputation services, alert throttle 5 min per (source, service).
+Not run here: PowerShell launchers, real nmap/Npcap, real Supabase, pywebpush with a real browser, torch training
+(test skipped without torch). Live checks: docs/LAB_CHECKLIST.md.

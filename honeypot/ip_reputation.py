@@ -2,11 +2,17 @@
 Attacker IP reputation lookups for honeypot hits.
 
 Queries AbuseIPDB and AlienVault OTX (both free tiers). Returns a normalized
-verdict. Fails soft: if keys are missing or a service is down, returns 'unknown'
-rather than breaking the honeypot.
+verdict: malicious | suspicious | clean | unknown | internal.
+
+  * internal - a private / loopback address (a lab machine). Such addresses
+    mean nothing to a public reputation service and are never sent to one.
+  * unknown  - keys missing or the services could not be reached.
+
+Fails soft: a lookup problem never breaks the honeypot.
 """
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 
 import requests
@@ -17,10 +23,23 @@ ABUSE_URL = "https://api.abuseipdb.com/api/v2/check"
 OTX_URL = "https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general"
 
 
+def is_internal(ip: str) -> bool:
+    """Private, loopback or link-local address (or not an IP address at all)."""
+    try:
+        addr = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return True  # garbage is never sent to an outside service
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
 @lru_cache(maxsize=1024)
 def lookup(ip: str) -> dict:
     s = get_settings()
     out = {"abuse_score": None, "otx_pulses": None, "reputation": "unknown"}
+
+    if is_internal(ip):
+        out["reputation"] = "internal"
+        return out
 
     if s.abuseipdb_api_key:
         try:

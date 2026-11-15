@@ -3,6 +3,7 @@ Train the risk-scoring MLP on the synthetic bootstrap dataset.
 
   python -m ml.train               # train + save to ./data/model/
   python -m ml.train --n 40000 --epochs 60
+  python -m ml.train --if-missing  # only when no model exists yet (launcher)
 
 Saves:
   data/model/risk_mlp.pt    — weights
@@ -83,8 +84,22 @@ def train(n: int = 20000, epochs: int = 40, seed: int = 42) -> dict:
     return meta
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="ml.train")
     ap.add_argument("--n", type=int, default=20000)
     ap.add_argument("--epochs", type=int, default=40)
-    train(ap.parse_args().n, ap.parse_args().epochs)
+    ap.add_argument("--if-missing", action="store_true",
+                    help="do nothing when a trained model already exists")
+    args = ap.parse_args(argv)
+    if args.if_missing and MODEL_PATH.exists() and META_PATH.exists():
+        print(f"Model already trained ({MODEL_PATH}); nothing to do.")
+        return 0
+    if not _HAVE_TORCH:
+        print("PyTorch is not installed: the transparent risk formula stays in use.")
+        return 1
+    train(args.n, args.epochs)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

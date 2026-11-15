@@ -43,12 +43,34 @@ def _profile(user_id: str) -> dict:
     return rows[0]
 
 
+def _engine_status() -> dict:
+    """What the scoring and CVE data rest on right now (shown on Settings)."""
+    status: dict = {}
+    try:
+        from ml.risk_score import model_status
+        status["model"] = model_status()
+    except Exception as e:
+        status["model"] = {"engine": "unavailable", "trained": False, "error": str(e)[:120]}
+    try:
+        from intel.cli import intel_status
+        status["intel"] = intel_status()
+    except Exception as e:
+        status["intel"] = {"cves": 0, "kev": 0, "epss": 0, "error": str(e)[:120]}
+    try:
+        from common import webpush
+        status["push"] = {"configured": webpush.is_configured()}
+    except Exception:
+        status["push"] = {"configured": False}
+    return status
+
+
 @app.get("/health")
 def health():
     sc = scope_store.effective_scope()
     return {"ok": True, "authorized": sc["authorized"], "scope_source": sc["source"],
             "scope": [str(n) for n in sc["allowed_ranges"]],
-            "cloud": get_service_client() is not None}
+            "cloud": get_service_client() is not None,
+            **_engine_status()}
 
 
 # ----- target readiness (Assets page "Test" button) ---------------------------
@@ -279,25 +301,41 @@ def remediation_reject(req: RejectReq):
 # ----- TOTP enrollment -------------------------------------------------------
 class EnrollReq(BaseModel):
     user_id: str
+    current_code: str = ""      # needed only to REPLACE an existing 2FA setup
 
 
 @app.post("/totp/enroll")
 def totp_enroll(req: EnrollReq):
     prof = _profile(req.user_id)
+    if prof.get("totp_enrolled") and prof.get("totp_secret"):
+        # replacing 2FA needs proof of the current one; otherwise anyone who
+        # can reach the API could take over an admin's second factor
+        try:
+            valid = totp_2fa.verify(totp_2fa.open_secret(prof["totp_secret"]), req.current_code)
+        except Exception:
+            valid = False
+        if not valid:
+            log_event(prof.get("email", "user"), "totp.reenroll_refused", req.user_id)
+            raise HTTPException(
+                403, "2FA is already set up for this user. Enter a current 6-digit code to "
+                     "replace it, or reset it on the engine PC: run.bat totp-reset <email>")
     secret = totp_2fa.new_secret()
     uri = totp_2fa.provisioning_uri(secret, prof.get("email", "user"))
     client = get_service_client()
     client.table("profiles").update({
         "totp_secret": totp_2fa.seal_secret(secret), "totp_enrolled": True,
     }).eq("id", req.user_id).execute()
+    log_event(prof.get("email", "user"), "totp.enroll", req.user_id)
     return {"qr": totp_2fa.qr_png_base64(uri), "otpauth_uri": uri}
 
 
 # ----- audit + reports -------------------------------------------------------
 @app.get("/audit/verify")
 def audit_verify():
+    """Re-check the audit hash chain and the signatures of the stored scan bundles."""
+    from scanner.uplink import verify_stored_bundles
     ok, n, msg = verify_chain()
-    return {"ok": ok, "entries": n, "message": msg}
+    return {"ok": ok, "entries": n, "message": msg, "bundles": verify_stored_bundles()}
 
 
 @app.get("/report/latest.pdf")

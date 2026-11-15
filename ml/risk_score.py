@@ -13,6 +13,7 @@ Public API:
   score_vector(vec)          -> (score, [ {feature, contribution, why}, ... ])
   score_host(host_result)    -> mutates host_result vulns + sets risk grade
   grade_from_score(score)    -> 'A'..'F'
+  model_status()             -> which scorer is active (trained model / formula)
 """
 from __future__ import annotations
 
@@ -21,7 +22,8 @@ from functools import lru_cache
 
 import numpy as np
 
-from .features import FEATURE_NAMES, FEATURE_EXPLANATION, vuln_to_features
+from .features import (FEATURE_NAMES, FEATURE_EXPLANATION, WATCHLIST_REASON,
+                       vuln_to_features)
 from .model import MODEL_PATH, META_PATH, _HAVE_TORCH
 
 
@@ -54,6 +56,19 @@ def _load():
     def predict(batch: np.ndarray) -> np.ndarray:
         return oracle_risk(batch)
     return predict, mean, std
+
+
+def model_status() -> dict:
+    """Which scorer is in use: the trained PyTorch model or the expert formula."""
+    trained = _HAVE_TORCH and MODEL_PATH.exists()
+    metrics = {}
+    if META_PATH.exists():
+        try:
+            metrics = json.loads(META_PATH.read_text()).get("metrics", {})
+        except (OSError, ValueError):
+            metrics = {}
+    return {"engine": "pytorch" if trained else "formula", "trained": bool(trained),
+            "torch_installed": _HAVE_TORCH, "metrics": metrics if trained else {}}
 
 
 def grade_from_score(score: float) -> str:
@@ -99,8 +114,9 @@ def score_host(host_result: dict) -> dict:
     for v in vulns:
         score, reasons = score_vector(vuln_to_features(v, host_result))
         v["ml_risk_score"] = score
-        existing = v.get("ml_reasons") or []
-        v["ml_reasons"] = existing + [
+        # rebuilt on every call, so scoring a host twice never doubles the list
+        watched = v.get("on_watchlist") or WATCHLIST_REASON in (v.get("ml_reasons") or [])
+        v["ml_reasons"] = ([WATCHLIST_REASON] if watched else []) + [
             f"{r['why']} ({'+' if r['contribution'] >= 0 else ''}{r['contribution']})"
             for r in reasons
         ]

@@ -97,13 +97,18 @@ def _store(conn, vulns) -> int:
                     cpe23 = m.get("criteria", "")
                     vendor, product = _parse_cpe23(cpe23)
                     parts = cpe23.split(":")
+                    start_incl = m.get("versionStartIncluding")
+                    end_incl = m.get("versionEndIncluding")
                     conn.execute(
                         "insert into cpe_match(cve_id,vendor,product,version_start,"
-                        "version_end,version_exact,cpe23) values(?,?,?,?,?,?,?)",
+                        "version_end,version_exact,cpe23,version_start_excl,"
+                        "version_end_excl) values(?,?,?,?,?,?,?,?,?)",
                         (cid, vendor, product,
-                         m.get("versionStartIncluding") or m.get("versionStartExcluding"),
-                         m.get("versionEndIncluding") or m.get("versionEndExcluding"),
-                         parts[5] if len(parts) > 5 else None, cpe23))
+                         start_incl or m.get("versionStartExcluding"),
+                         end_incl or m.get("versionEndExcluding"),
+                         parts[5] if len(parts) > 5 else None, cpe23,
+                         int(not start_incl and bool(m.get("versionStartExcluding"))),
+                         int(not end_incl and bool(m.get("versionEndExcluding")))))
         n += 1
     return n
 

@@ -3,10 +3,81 @@ import { useState, Fragment } from "react";
 import Topbar from "@/components/Topbar";
 import ConfigNotice from "@/components/ConfigNotice";
 import { useTable } from "@/lib/useData";
+import { getSupabase } from "@/lib/supabaseClient";
 import { SeverityBadge, KevBadge, RiskBar, Empty } from "@/lib/ui";
+
+const CVE_ID = /^CVE-\d{4}-\d{4,}$/i;
+
+// CVE watchlist: CVEs the team wants an alert for the moment a scan finds them.
+function WatchlistCard({ rows, error, reload }: { rows: any[]; error: string | null; reload: () => void }) {
+  const [cve, setCve] = useState("");
+  const [note, setNote] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const id = cve.trim().toUpperCase();
+
+  function explain(e: { code?: string; message: string }) {
+    if (e.code === "23505") return "That CVE is already on the watchlist.";
+    if (/row-level security/i.test(e.message)) return "Only analysts and admins can change the watchlist.";
+    return e.message;
+  }
+
+  async function add() {
+    const sb = getSupabase();
+    if (!sb || !CVE_ID.test(id)) return;
+    setBusy(true);
+    const { error: e } = await sb.from("cve_watchlist").insert({ cve_id: id, note: note.trim() || null });
+    setBusy(false);
+    if (e) { setMsg(explain(e)); return; }
+    setMsg(`${id} added. You get an alert (and a ticket) when a scan finds it.`);
+    setCve(""); setNote("");
+    reload();
+  }
+
+  async function remove(rowId: string, cveId: string) {
+    const sb = getSupabase();
+    if (!sb) return;
+    const { error: e } = await sb.from("cve_watchlist").delete().eq("id", rowId);
+    setMsg(e ? explain(e) : `${cveId} removed.`);
+    reload();
+  }
+
+  return (
+    <div className="card">
+      <div className="text-sm font-semibold mb-1">CVE watchlist</div>
+      <p className="text-xs text-muted mb-3">
+        Add a CVE you are worried about. When a scan finds it on any host you get an alert and a ticket,
+        whatever its score.
+      </p>
+      <div className="flex flex-wrap gap-2 items-center">
+        <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm w-48 font-mono"
+          placeholder="CVE-2011-2523" value={cve} onChange={(e) => setCve(e.target.value)} />
+        <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm flex-1 min-w-[12rem]"
+          placeholder="Note (optional), e.g. why it matters" value={note} maxLength={200}
+          onChange={(e) => setNote(e.target.value)} />
+        <button className="btn btn-primary" onClick={add} disabled={busy || !CVE_ID.test(id)}>Add</button>
+      </div>
+      {msg && <div className="text-xs text-muted mt-2">{msg}</div>}
+      {error && <div className="text-xs text-critical mt-2">{error}</div>}
+      {rows.length > 0 && (
+        <div className="flex flex-wrap gap-2 mt-3">
+          {rows.map((w) => (
+            <span key={w.id} className="badge bg-accent/20 text-accent border border-accent/40" title={w.note || ""}>
+              {w.cve_id}
+              <button className="ml-2 text-muted hover:text-critical" aria-label={`Remove ${w.cve_id}`}
+                onClick={() => remove(w.id, w.cve_id)}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function VulnPage() {
   const { rows } = useTable<any>("vulnerabilities", { orderBy: "ml_risk_score", limit: 1000 });
+  const watch = useTable<any>("cve_watchlist", { orderBy: "created_at" });
+  const watched = new Set(watch.rows.map((w) => w.cve_id));
   const [kevOnly, setKevOnly] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
   const [q, setQ] = useState("");
@@ -24,6 +95,7 @@ export default function VulnPage() {
       <Topbar title="Vulnerabilities" />
       <div className="p-6 space-y-4">
         <ConfigNotice />
+        <WatchlistCard rows={watch.rows} error={watch.error} reload={watch.reload} />
         <div className="flex gap-3 items-center">
           <input
             className="bg-panel border border-edge rounded-lg px-3 py-2 text-sm w-64"
@@ -56,6 +128,9 @@ export default function VulnPage() {
                   <tr className="hover:bg-panel2/50 cursor-pointer" onClick={() => setOpen(open === v.id ? null : v.id)}>
                     <td className="td font-mono text-accent">
                       {v.cve_id}
+                      {watched.has(v.cve_id) && (
+                        <span className="ml-2 badge bg-accent/20 text-accent border border-accent/40">watchlist</span>
+                      )}
                       {v.confidence === "version-unconfirmed" && (
                         <span className="ml-2 badge bg-panel2 text-muted border border-edge" title="Matched only through an open-ended NVD range; likely not affected">unconfirmed</span>
                       )}

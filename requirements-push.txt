@@ -1,0 +1,5 @@
+# Optional: web push notifications to subscribed browsers (common/webpush.py).
+# Installed by the launcher on a best-effort basis; without it everything else
+# works and push is simply off.
+#   .venv\Scripts\python -m pip install -r requirements-push.txt
+pywebpush==1.14.1

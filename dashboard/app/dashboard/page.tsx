@@ -9,6 +9,19 @@ import ConfigNotice from "@/components/ConfigNotice";
 import { useTable } from "@/lib/useData";
 import { StatCard, GradeBadge, SeverityBadge, KevBadge, RiskBar, Empty } from "@/lib/ui";
 
+const CHANGE_LABEL: Record<string, string> = {
+  new_asset: "new device",
+  port_opened: "port opened",
+  port_closed: "port closed",
+  version_changed: "version changed",
+};
+const CHANGE_TONE: Record<string, string> = {
+  new_asset: "bg-high/20 text-high border border-high/40",
+  port_opened: "bg-medium/20 text-medium border border-medium/40",
+  port_closed: "bg-low/20 text-low border border-low/40",
+  version_changed: "bg-info/20 text-info border border-info/40",
+};
+
 function gradeFromScore(s: number) {
   if (s >= 80) return "F";
   if (s >= 60) return "D";
@@ -21,7 +34,10 @@ export default function DashboardPage() {
   const assets = useTable<any>("assets", { orderBy: "risk_score" });
   const vulns = useTable<any>("vulnerabilities", { orderBy: "ml_risk_score", limit: 1000 });
   const tickets = useTable<any>("tickets");
-  const scans = useTable<any>("scans", { orderBy: "started_at", ascending: true });
+  // risk-trend tracking: one row per host and one for the whole network (asset_id = null)
+  // after every scan. Both tables arrive with database migration 004.
+  const history = useTable<any>("risk_history", { orderBy: "created_at", ascending: true, limit: 1000 });
+  const changes = useTable<any>("asset_changes", { orderBy: "created_at", limit: 12 });
 
   const netScore = useMemo(() => {
     const a = assets.rows;
@@ -40,14 +56,22 @@ export default function DashboardPage() {
   const openTickets = tickets.rows.filter((t) => !["resolved", "rejected"].includes(t.status)).length;
 
   const trend = useMemo(() => {
-    return scans.rows.slice(-20).map((s: any) => ({
-      t: (s.started_at || "").slice(5, 16).replace("T", " "),
-      hosts: s.host_count || 0,
-      risk: s.summary?.default_cred_hits
-        ? 50 + (s.summary.default_cred_hits || 0) * 5
-        : s.summary?.open_services || 0,
-    }));
-  }, [scans.rows]);
+    return history.rows
+      .filter((h: any) => h.asset_id == null)
+      .slice(-30)
+      .map((h: any) => ({
+        t: (h.created_at || "").slice(5, 16).replace("T", " "),
+        risk: Number(h.risk_score) || 0,
+        vulns: h.open_vulns || 0,
+        grade: h.risk_grade || "",
+      }));
+  }, [history.rows]);
+
+  const ipOf = useMemo(() => {
+    const m: Record<string, string> = {};
+    assets.rows.forEach((a: any) => { m[a.id] = a.ip; });
+    return m;
+  }, [assets.rows]);
 
   // one row per CVE, confirmed matches first
   const topVulns = useMemo(() => {
@@ -89,7 +113,7 @@ export default function DashboardPage() {
 
         <div className="grid md:grid-cols-3 gap-4">
           <div className="card md:col-span-2">
-            <div className="text-sm font-semibold mb-3">Scan activity &amp; exposure trend</div>
+            <div className="text-sm font-semibold mb-3">Risk trend (network average after each scan)</div>
             {trend.length ? (
               <ResponsiveContainer width="100%" height={240}>
                 <AreaChart data={trend}>
@@ -101,13 +125,16 @@ export default function DashboardPage() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#273349" />
                   <XAxis dataKey="t" stroke="#8ea0c0" fontSize={11} />
-                  <YAxis stroke="#8ea0c0" fontSize={11} />
+                  <YAxis stroke="#8ea0c0" fontSize={11} domain={[0, 100]} />
                   <Tooltip contentStyle={{ background: "#111827", border: "1px solid #273349" }} />
-                  <Area type="monotone" dataKey="risk" stroke="#3b82f6" fill="url(#g)" name="exposure" />
+                  <Area type="monotone" dataKey="risk" stroke="#3b82f6" fill="url(#g)" name="risk (0-100)" />
+                  <Area type="monotone" dataKey="vulns" stroke="#f97316" fillOpacity={0} name="open findings" />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <Empty msg="No scans yet. Click “Run scan”." />
+              <Empty msg={history.error
+                ? "Risk history table not found: run supabase/migrations/004_trend_changes.sql once."
+                : "No risk history yet. Run a scan."} />
             )}
           </div>
           <div className="card">
@@ -130,6 +157,44 @@ export default function DashboardPage() {
               <Empty msg="No vulnerabilities yet." />
             )}
           </div>
+        </div>
+
+        <div className="card">
+          <div className="text-sm font-semibold mb-3">Recent changes (change detection)</div>
+          {changes.rows.length ? (
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className="th">When</th><th className="th">Host</th>
+                  <th className="th">Change</th><th className="th">Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {changes.rows.map((c: any) => (
+                  <tr key={c.id}>
+                    <td className="td text-xs text-muted tabular-nums">
+                      {(c.created_at || "").slice(0, 16).replace("T", " ")}
+                    </td>
+                    <td className="td font-mono text-sm">{ipOf[c.asset_id] || "–"}</td>
+                    <td className="td">
+                      <span className={`badge ${CHANGE_TONE[c.kind] || CHANGE_TONE.version_changed}`}>
+                        {CHANGE_LABEL[c.kind] || c.kind}
+                      </span>
+                    </td>
+                    <td className="td text-sm">
+                      {c.port != null && <span className="font-mono">port {c.port} </span>}
+                      {c.detail?.service && <span className="text-muted">({c.detail.service}) </span>}
+                      {c.detail?.from && <span className="text-muted">{c.detail.from} → {c.detail.to}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <Empty msg={changes.error
+              ? "Change table not found: run supabase/migrations/004_trend_changes.sql once."
+              : "No changes recorded yet. They appear from the second scan of a host."} />
+          )}
         </div>
 
         <div className="card">

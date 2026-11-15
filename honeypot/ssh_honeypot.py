@@ -15,6 +15,8 @@ from .events import record
 
 PORT = 2222
 BANNER = "SSH-2.0-OpenSSH_7.4"  # looks like a common real server
+AUTH_WAIT_SECONDS = 20          # how long one client may keep trying passwords
+MAX_CLIENTS = 50                # connections handled at the same time
 
 
 def _make_server_key():
@@ -22,64 +24,95 @@ def _make_server_key():
     return paramiko.RSAKey.generate(2048)
 
 
-class _HoneyServer:
-    """paramiko ServerInterface that logs creds and refuses everything."""
-    def __init__(self, src_ip, src_port):
-        import paramiko
-        self._paramiko = paramiko
-        self.src_ip = src_ip
-        self.src_port = src_port
+def _new_server(src_ip: str, src_port: int):
+    """
+    The paramiko "server side" object for one connection.
 
-    def check_auth_password(self, username, password):
-        record("ssh", self.src_ip, self.src_port, username=username, password=password)
-        return self._paramiko.AUTH_FAILED  # never accept
-
-    def check_auth_publickey(self, username, key):
-        record("ssh", self.src_ip, self.src_port, username=username, password="<pubkey>")
-        return self._paramiko.AUTH_FAILED
-
-    def get_allowed_auths(self, username):
-        return "password,publickey"
-
-    def check_channel_request(self, kind, chanid):
-        return self._paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
-
-
-def _handle(client_sock, addr, host_key):
+    It must inherit from paramiko.ServerInterface: paramiko calls several
+    methods on it during the login (get_banner, check_auth_none, ...) and a
+    plain class without them makes the connection crash before the password
+    is ever seen. Built here (not at import time) so the module still loads
+    when paramiko is not installed.
+    """
     import paramiko
-    src_ip, src_port = addr
+
+    class HoneyServer(paramiko.ServerInterface):
+        """Logs every credential and refuses everything."""
+
+        def check_auth_password(self, username, password):
+            record("ssh", src_ip, src_port, username=username, password=password)
+            return paramiko.AUTH_FAILED  # never accept
+
+        def check_auth_publickey(self, username, key):
+            record("ssh", src_ip, src_port, username=username, password="<pubkey>")
+            return paramiko.AUTH_FAILED
+
+        def get_allowed_auths(self, username):
+            return "password,publickey"
+
+        def check_channel_request(self, kind, chanid):
+            return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+
+    return HoneyServer()
+
+
+def _handle(client_sock, addr, host_key) -> None:
+    import paramiko
+    src_ip, src_port = addr[0], addr[1]
+    transport = None
     try:
-        t = paramiko.Transport(client_sock)
-        t.local_version = BANNER
-        t.add_server_key(host_key)
-        server = _HoneyServer(src_ip, src_port)
-        try:
-            t.start_server(server=server)
-        except Exception:
-            pass
-        # give the client a moment to attempt auth, then drop
-        chan = t.accept(8)
+        client_sock.settimeout(AUTH_WAIT_SECONDS)
+        transport = paramiko.Transport(client_sock)
+        transport.local_version = BANNER
+        transport.add_server_key(host_key)
+        transport.start_server(server=_new_server(src_ip, src_port))
+        # nothing is ever accepted, so no channel will open: this only gives
+        # the client time to try its passwords before we hang up
+        chan = transport.accept(AUTH_WAIT_SECONDS)
         if chan is not None:
             chan.close()
-        t.close()
     except Exception:
+        pass  # scanners send garbage / hang up mid-handshake all the time
+    finally:
         try:
+            if transport is not None:
+                transport.close()
             client_sock.close()
         except Exception:
             pass
 
 
-def serve(port: int = PORT) -> None:
-    host_key = _make_server_key()
+def listen(port: int = PORT, host: str = "0.0.0.0") -> socket.socket:
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("0.0.0.0", port))
+    srv.bind((host, port))
     srv.listen(100)
-    print(f"[honeypot] fake SSH listening on :{port}")
+    return srv
+
+
+def accept_loop(srv: socket.socket, host_key) -> None:
+    """Serve until the listening socket is closed."""
+    slots = threading.BoundedSemaphore(MAX_CLIENTS)
+
+    def run(client, addr):
+        try:
+            _handle(client, addr, host_key)
+        finally:
+            slots.release()
+
     while True:
         try:
             client, addr = srv.accept()
-            threading.Thread(target=_handle, args=(client, addr, host_key),
-                             daemon=True).start()
-        except Exception:
+        except OSError:
+            return  # socket closed -> stop
+        if not slots.acquire(blocking=False):
+            client.close()  # too many at once: drop instead of piling up threads
             continue
+        threading.Thread(target=run, args=(client, addr), daemon=True).start()
+
+
+def serve(port: int = PORT) -> None:
+    host_key = _make_server_key()
+    srv = listen(port)
+    print(f"[honeypot] fake SSH listening on :{port}")
+    accept_loop(srv, host_key)

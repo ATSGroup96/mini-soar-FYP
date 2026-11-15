@@ -20,6 +20,9 @@ FEATURE_NAMES = [
     "rogue_asset",       # 0/1   unauthorized device
 ]
 
+# reason text attached to a finding whose CVE is on the team's watchlist
+WATCHLIST_REASON = "on CVE watchlist"
+
 # human-readable explanations keyed by feature, used in the explainable output
 FEATURE_EXPLANATION = {
     "cvss": "CVSS base severity",

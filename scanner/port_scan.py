@@ -7,7 +7,9 @@ pipeline consumes. CPE strings from nmap feed the offline CVE matcher.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
+from xml.etree import ElementTree
 
 from common.allowlist import assert_in_scope
 from common.audit import log_event
@@ -40,6 +42,41 @@ class HostScan:
     os_guess: str = ""
     os_accuracy: int = 0
     services: list[ServiceInfo] = field(default_factory=list)
+    # False = nmap failed / timed out for this host, so "no open ports" is NOT
+    # a finding. Re-scan verification must ignore such a host.
+    scan_ok: bool = False
+
+
+def _host_timeout_seconds() -> int:
+    """SCAN_HOST_TIMEOUT in .env (seconds per host, default 300, min 60)."""
+    try:
+        return max(60, int(os.environ.get("SCAN_HOST_TIMEOUT", "300") or 300))
+    except ValueError:
+        return 300
+
+
+def _timed_out(nm, ip: str) -> bool:
+    """nmap gives up on a slow host (--host-timeout) and still lists it as 'up'
+    with no ports. Its XML marks that host timedout="true"; python-nmap does not
+    expose the flag, so read it from the raw output."""
+    try:
+        raw = nm.get_nmap_last_output()
+    except Exception:
+        return False
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    if not raw or "timedout" not in raw:
+        return False
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return False
+    for host in root.iter("host"):
+        if host.get("timedout") != "true":
+            continue
+        if any(a.get("addr") == ip for a in host.iter("address")):
+            return True
+    return False
 
 
 def _os_from_services(services) -> tuple[str, int]:
@@ -77,7 +114,8 @@ def scan_host(ip: str, mac: str | None = None, full_ports: bool = False,
     # -sV service/version; -sS SYN; -O OS; -T4 lab-speed; -n no DNS
     # NAT mode (Docker Desktop on Windows): -sT connect scan, no raw -O
     scan_type = "-sT -Pn --unprivileged" if nat else "-sS"
-    args = f"{scan_type} -sV {ports} -T4 -n --max-retries 2 --host-timeout 180s"
+    args = (f"{scan_type} -sV {ports} -T4 -n --max-retries 2 "
+            f"--host-timeout {_host_timeout_seconds()}s")
     if os_detect and not nat:
         args += " -O --osscan-guess"
 
@@ -89,7 +127,14 @@ def scan_host(ip: str, mac: str | None = None, full_ports: bool = False,
         return result
 
     if ip not in nm.all_hosts():
+        log_event("engine", "portscan.no_answer", ip, {})
         return result
+    if _timed_out(nm, ip):
+        log_event("engine", "portscan.timeout", ip,
+                  {"host_timeout_sec": _host_timeout_seconds()})
+        slog.send(f"port scan TIMED OUT: {ip} (result ignored)", slog.WARNING)
+        return result
+    result.scan_ok = True
 
     node = nm[ip]
     hostnames = node.hostnames() or []

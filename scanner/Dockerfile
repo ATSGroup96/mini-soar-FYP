@@ -24,6 +24,10 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+# optional: web push notifications (the engine works without it)
+COPY requirements-push.txt /app/requirements-push.txt
+RUN pip install --no-cache-dir -r /app/requirements-push.txt \
+    || echo "pywebpush not installed: push notifications stay off"
 
 COPY common/   /app/common/
 COPY scanner/  /app/scanner/

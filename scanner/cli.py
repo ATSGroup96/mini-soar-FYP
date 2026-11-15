@@ -5,6 +5,7 @@ Usage:
   python -m scanner.cli scan [--scope env | --targets 192.168.56.101,...] [--full-ports]
   python -m scanner.cli discover
   python -m scanner.cli verify-audit
+  python -m scanner.cli verify-bundles
   python -m scanner.cli show-scope
 """
 from __future__ import annotations
@@ -105,8 +106,20 @@ def _cmd_scan(args) -> int:
             f"{len(h.get('default_creds', []))} default-cred, "
             f"{len(h.get('vulnerabilities', []))} CVE"
             + ("  [red](ROGUE)[/red]" if h.get("is_rogue") else "")
+            + ("" if h.get("scan_ok", True) else
+               "  [yellow](port scan FAILED / timed out - nothing closed)[/yellow]")
         )
     return 0
+
+
+def _cmd_verify_bundles(_args) -> int:
+    from .uplink import verify_stored_bundles
+    r = verify_stored_bundles()
+    color = "green" if not r["bad"] else "red"
+    console.print(f"[{color}]Stored scan bundles: {r['ok']} of {r['checked']} verified[/{color}]")
+    for msg in r["bad"]:
+        console.print(f"  [red]{msg}[/red]")
+    return 0 if not r["bad"] else 2
 
 
 def _cmd_verify_audit(_args) -> int:
@@ -131,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("discover", help="host discovery only").set_defaults(func=_cmd_discover)
     sub.add_parser("show-scope", help="print scope + auth gate").set_defaults(func=_cmd_show_scope)
     sub.add_parser("verify-audit", help="verify audit hash chain").set_defaults(func=_cmd_verify_audit)
+    sub.add_parser("verify-bundles", help="verify the signature of every stored scan bundle"
+                   ).set_defaults(func=_cmd_verify_bundles)
 
     args = parser.parse_args(argv)
     try:

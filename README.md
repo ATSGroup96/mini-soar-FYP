@@ -52,6 +52,21 @@ the user you created in Supabase → Authentication → Users.
 
 ---
 
+## Tests
+
+```
+.\run.bat test                                  # Windows native mode
+.venv\Scripts\python -m pytest                  # or directly (pip install -r requirements-dev.txt first)
+```
+
+421 automated test cases in `tests/` cover every module and the full flow
+(scan → tickets → approve with 2FA → fix over SSH → verify → re-scan → closed).
+They never read the real `.env`, never contact the real Supabase project and only
+connect to 127.0.0.1. Results: `docs/TEST_RESULTS.md`. Live-lab checks: `docs/LAB_CHECKLIST.md`.
+
+**After updating to v10:** run `supabase/migrations/004_trend_changes.sql` once in the
+Supabase SQL Editor, then `.\run.bat update`. Details: `docs/CHANGELOG.md`.
+
 ## Contents
 1. [Architecture](#architecture)
 2. [Feature checklist (18)](#feature-checklist-18)

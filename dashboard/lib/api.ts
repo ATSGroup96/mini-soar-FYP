@@ -53,8 +53,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ remediation_id, admin_user_id, reason }),
     }),
-  enrollTotp: (user_id: string) =>
-    call("/totp/enroll", { method: "POST", body: JSON.stringify({ user_id }) }),
+  // current_code is needed only when the user already has 2FA and replaces it
+  enrollTotp: (user_id: string, current_code = "") =>
+    call("/totp/enroll", { method: "POST", body: JSON.stringify({ user_id, current_code }) }),
   verifyAudit: () => call("/audit/verify"),
   reportUrl: () => `${API}/report/latest.pdf`,
 };

@@ -23,21 +23,30 @@ def _grade(score: float) -> str:
 
 
 def _gather() -> dict:
+    """Current state from Supabase. Only OPEN findings and OPEN ports count."""
     client = get_service_client()
     if not client:
-        return {"assets": [], "vulns": [], "tickets": [], "remediations": []}
+        return {"assets": [], "vulns": [], "services": [], "tickets": [], "remediations": []}
+    services = client.table("services").select("*").execute().data
     return {
         "assets": client.table("assets").select("*").execute().data,
-        "vulns": client.table("vulnerabilities").select("*")
-                 .order("ml_risk_score", desc=True).limit(50).execute().data,
+        "vulns": client.table("vulnerabilities").select("*").eq("status", "open")
+                 .order("ml_risk_score", desc=True).limit(1000).execute().data,
+        "services": [s for s in services if (s.get("state") or "open") == "open"],
         "tickets": client.table("tickets").select("*").execute().data,
         "remediations": client.table("remediations").select("*").execute().data,
     }
 
 
 def _hosts_for_mitre(data: dict) -> list[dict]:
+    """Rebuild each host (open services + open findings) for the ATT&CK mapping."""
     by_asset = {a["id"]: {"ip": a["ip"], "is_rogue": a.get("is_rogue"),
                           "services": [], "vulnerabilities": []} for a in data["assets"]}
+    for s in data.get("services", []):
+        h = by_asset.get(s["asset_id"])
+        if h:
+            h["services"].append({"service_name": s.get("service_name"),
+                                  "has_default_cred": s.get("has_default_cred")})
     for v in data["vulns"]:
         h = by_asset.get(v["asset_id"])
         if h:
@@ -78,7 +87,7 @@ def build_latest_report() -> str:
         ["Security grade", grade, "Avg risk", f"{net_score:.0f}/100"],
         ["Assets", str(len(assets)),
          "Rogue devices", str(sum(1 for a in assets if a.get("is_rogue")))],
-        ["Vulnerabilities", str(len(data["vulns"])),
+        ["Open vulnerabilities", str(len(data["vulns"])),
          "On CISA KEV", str(len(kev))],
         ["Open tickets",
          str(sum(1 for t in data["tickets"] if t.get("status") not in ("resolved", "rejected"))),
@@ -92,6 +101,25 @@ def build_latest_report() -> str:
         ("FONTSIZE", (0, 0), (-1, -1), 9),
     ]))
     story.append(t)
+    story.append(Spacer(1, 6 * mm))
+
+    # Assets with their grade
+    story.append(Paragraph("Assets", styles["Heading2"]))
+    arows = [["IP address", "Operating system", "Grade", "Risk", "Rogue"]]
+    for a in sorted(assets, key=lambda x: x.get("risk_score") or 0, reverse=True)[:40]:
+        arows.append([str(a.get("ip") or "-"), (a.get("os_guess") or "-")[:38],
+                      a.get("risk_grade") or "-", f"{a.get('risk_score') or 0:.0f}",
+                      "YES" if a.get("is_rogue") else "-"])
+    if len(arows) == 1:
+        arows.append(["(no assets yet)", "", "", "", ""])
+    at = Table(arows, colWidths=[32 * mm, 62 * mm, 16 * mm, 16 * mm, 16 * mm])
+    at.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5e1")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f766e")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(at)
     story.append(Spacer(1, 6 * mm))
 
     # Top findings

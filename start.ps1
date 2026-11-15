@@ -9,6 +9,8 @@
   .\start.ps1 check  <ip>          test if a host is ready for auto-fix (changes nothing)
   .\start.ps1 logs [service]       live logs (soar, api, scanner, dashboard)
   .\start.ps1 stop                 stop everything
+  .\start.ps1 train                train the ML risk model again
+  .\start.ps1 totp-reset <email>   remove a user's 2FA so they can enrol again
 
   If Windows blocks the script:  powershell -ExecutionPolicy Bypass -File .\start.ps1
   (or just use run.bat, which does that for you)
@@ -77,6 +79,14 @@ if ($Command -eq "enroll" -or $Command -eq "check") {
   exit $LASTEXITCODE
 }
 
+# --- one-off tools ---------------------------------------------------------------
+if ($Command -eq "train") { Dc run --rm --entrypoint python api -m ml.train; exit $LASTEXITCODE }
+if ($Command -eq "totp-reset") {
+  if (-not $Arg1) { Write-Host "usage: .\start.ps1 totp-reset <email>"; exit 1 }
+  Dc run --rm --entrypoint python api -m soar.totp_2fa reset $Arg1
+  exit $LASTEXITCODE
+}
+
 # --- start ---------------------------------------------------------------------
 if ($Command -eq "update") {
   Write-Host "-- rebuilding images (first time can take 10+ minutes)"
@@ -96,8 +106,10 @@ if ($healthy) { Ok "API healthy" } else { Bad "API not answering (.\start.ps1 lo
 Dc run --rm scanner show-scope 2>$null | Select-Object -First 9
 
 if ($Command -eq "update") {
-  Write-Host "-- syncing CVEs for the software found in the lab"
-  Dc run --rm --entrypoint python api -m intel.cli sync-cpe
+  Write-Host "-- syncing CVE data: CISA KEV, EPSS, and CVEs for the software found in the lab"
+  Dc run --rm --entrypoint python api -m intel.cli sync-lab
+  Write-Host "-- ML risk model (trained once, about a minute)"
+  Dc run --rm --entrypoint python api -m ml.train --if-missing
 }
 
 if ($Command -eq "scan" -or $Command -eq "update") {

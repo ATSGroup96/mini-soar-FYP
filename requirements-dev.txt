@@ -1,0 +1,5 @@
+# Extra packages needed only to run the test suite (tests/).
+#   .venv\Scripts\python -m pip install -r requirements-dev.txt
+#   .venv\Scripts\python -m pytest
+-r requirements.txt
+pytest==8.2.2

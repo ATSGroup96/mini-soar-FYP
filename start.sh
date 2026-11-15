@@ -73,7 +73,9 @@ docker compose run --rm scanner show-scope 2>/dev/null | head -8
 
 if [ "${1:-}" = "update" ]; then
   echo "-- syncing CVEs for the software found in the lab"
-  docker compose run --rm --entrypoint python api -m intel.cli sync-cpe
+  docker compose run --rm --entrypoint python api -m intel.cli sync-lab || true
+  echo "-- ML risk model (trained once, about a minute)"
+  docker compose run --rm --entrypoint python api -m ml.train --if-missing || true
 fi
 
 if [ "${1:-}" = "scan" ] || [ "${1:-}" = "update" ]; then

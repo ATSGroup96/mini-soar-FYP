@@ -33,6 +33,9 @@ create table if not exists cpe_match (
     version_end   text,
     version_exact text,
     cpe23         text,
+    -- 1 when NVD gave the bound as "excluding" (e.g. "before 2.2.8": 2.2.8 is safe)
+    version_start_excl integer not null default 0,
+    version_end_excl   integer not null default 0,
     foreign key (cve_id) references cves(cve_id)
 );
 create index if not exists idx_cpe_product on cpe_match(product);
@@ -63,10 +66,26 @@ create table if not exists meta (
 """
 
 
+# columns added after the first release: (table, column, definition)
+_ADDED_COLUMNS = [
+    ("cpe_match", "version_start_excl", "integer not null default 0"),
+    ("cpe_match", "version_end_excl", "integer not null default 0"),
+]
+
+
+def _migrate(conn) -> None:
+    """Add newer columns to a database created by an older version."""
+    for table, column, definition in _ADDED_COLUMNS:
+        have = {r["name"] for r in conn.execute(f"pragma table_info({table})")}
+        if column not in have:
+            conn.execute(f"alter table {table} add column {column} {definition}")
+
+
 def init_db() -> None:
     conn = get_intel_db()
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()

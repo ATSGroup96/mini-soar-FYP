@@ -8,6 +8,8 @@ const REP_CLS: Record<string, string> = {
   malicious: "bg-critical/20 text-critical border border-critical/40",
   suspicious: "bg-high/20 text-high border border-high/40",
   clean: "bg-low/20 text-low border border-low/40",
+  // a machine inside the lab touched the decoy: always worth a look
+  internal: "bg-medium/20 text-medium border border-medium/40",
   unknown: "bg-panel2 text-muted border border-edge",
 };
 
@@ -19,8 +21,9 @@ export default function HoneypotPage() {
       <div className="p-6 space-y-4">
         <ConfigNotice />
         <div className="card text-xs text-muted">
-          Fake SSH (:2222) and HTTP (:8081) decoys. Any connection is logged and the source IP is
-          checked against AbuseIPDB &amp; AlienVault OTX. The decoys never grant access.
+          Fake SSH (:2222) and HTTP (:8081) decoys. Every attempt is logged and the decoys never grant
+          access. Public source addresses are checked against AbuseIPDB &amp; AlienVault OTX; an address
+          from inside the lab is marked <span className="font-mono">internal</span> and always raises an alert.
         </div>
         <div className="card p-0 overflow-hidden">
           <table className="w-full">

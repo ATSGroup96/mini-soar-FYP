@@ -2,7 +2,8 @@
 Ticket creation + SLA timers + escalation + auto-suggested fixes.
 
 After a scan:
-  * open a ticket for each high-priority CVE (KEV, critical, or ML risk >= 70)
+  * open a ticket for each high-priority CVE (KEV, critical, ML risk >= 70,
+    or on the team's CVE watchlist)
   * open a ticket for each default credential and each clear-text login service
   * attach an auto-suggested remediation playbook (soar/playbooks.py) to every
     ticket, so the analyst only confirms it
@@ -16,11 +17,15 @@ from datetime import datetime, timedelta, timezone
 
 from common.db import get_service_client
 from common.audit import log_event
+from common.notify import notify
+from ml.features import WATCHLIST_REASON
 from . import playbooks
 from .remediation import os_family
 
 # SLA windows (hours) by severity
 SLA_HOURS = {"critical": 24, "high": 72, "medium": 168, "low": 336, "info": 720}
+# a CVE with an ML risk score at or above this gets a ticket
+PRIORITY_RISK = 70
 
 
 def _sla_due(severity: str) -> str:
@@ -63,7 +68,8 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
     # ---- CVE tickets ---------------------------------------------------------
     for v in vulns:
         priority = (v.get("in_kev") or (v.get("severity") == "critical")
-                    or (v.get("ml_risk_score") or 0) >= 70)
+                    or (v.get("ml_risk_score") or 0) >= PRIORITY_RISK
+                    or WATCHLIST_REASON in (v.get("ml_reasons") or []))
         if not priority or v.get("confidence") == "version-unconfirmed":
             continue
         existing = client.table("tickets").select("id").eq("vuln_id", v["id"]).execute().data
@@ -89,7 +95,7 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
                   client.table("assets").select("id,ip").execute().data}
         for h in host_results:
             asset_id = assets.get(h["ip"])
-            if not asset_id:
+            if not asset_id or not h.get("scan_ok", True):
                 continue
             by_port = {s["port"]: s for s in h.get("services", [])}
             hos = os_family(h.get("os_guess"))
@@ -151,14 +157,15 @@ def resolve_by_rescan(host_results: list[dict] | None) -> int:
     """
     Close host-level tickets (exposed port / clear-text service / default
     credential) when the latest scan of that host no longer shows the problem.
-    Only hosts present in this scan are judged, so a partial scan never closes
-    tickets for hosts it did not look at.
+    Only hosts whose port scan really finished in this scan are judged, so a
+    partial, failed or timed-out scan never closes tickets.
     """
     client = get_service_client()
     if not client or not host_results:
         return 0
-    open_ports = {h["ip"]: {s["port"] for s in h.get("services", [])} for h in host_results}
-    cred_ports = {h["ip"]: {c["port"] for c in h.get("default_creds", [])} for h in host_results}
+    judged = [h for h in host_results if h.get("scan_ok", True)]
+    open_ports = {h["ip"]: {s["port"] for s in h.get("services", [])} for h in judged}
+    cred_ports = {h["ip"]: {c["port"] for c in h.get("default_creds", [])} for h in judged}
     n = 0
     for t in (client.table("tickets").select("id,title,status,vuln_id")
               .neq("status", "resolved").neq("status", "rejected").execute().data):
@@ -213,10 +220,8 @@ def escalate_overdue() -> int:
     for t in overdue:
         client.table("tickets").update(
             {"escalated": True, "status": "escalated"}).eq("id", t["id"]).execute()
-        client.table("notifications").insert({
-            "level": "high", "title": "SLA breached",
-            "body": f"Ticket '{t['title']}' is past its SLA.", "link": "/tickets",
-        }).execute()
+        notify(client, "high", "SLA breached",
+               f"Ticket '{t['title']}' is past its SLA.", "/tickets")
     if overdue:
         log_event("engine", "tickets.escalated", "", {"count": len(overdue)})
     return len(overdue)

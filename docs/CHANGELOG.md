@@ -5,6 +5,75 @@ Every change made to the project, newest first, in simple words. Each entry says
 
 ---
 
+## v10 — Tested, fixed, and brought in line with the proposal (15 Nov 2026)
+
+**In one line:** the project now has an automated test suite (421 test cases), eight
+real bugs found by it are fixed, and the five proposal features that were missing or
+half-done are finished.
+
+### A. Bugs found by the tests and fixed
+
+| # | What was wrong | Files | What it means for you |
+|---|---|---|---|
+| 1 | **A failed scan closed tickets.** When nmap timed out on a host it came back with "0 open ports", and the system believed everything was fixed (13 Nov: 46 CVE tickets + 20 host tickets closed). | `scanner/port_scan.py`, `scanner/engine.py`, `scanner/uplink.py`, `soar/ticketing.py` | A host whose port scan failed or timed out is now marked `scan_ok = false`. Nothing is closed, resolved or re-graded for it, and you get a notification "Scan of a host did not finish". The per-host timeout is now 300 s (`SCAN_HOST_TIMEOUT` in `.env`). |
+| 2 | **The SSH honeypot recorded nothing.** Its server class was not a real paramiko server, so every login attempt crashed the connection before the password was seen. | `honeypot/ssh_honeypot.py` | Fake SSH now records every username + password and always refuses. Proven with a real SSH client in the tests. |
+| 3 | **HTTP default-password check never fired.** A normal "200 OK" was always skipped. | `scanner/default_creds.py` | It now first checks that the page really asks for a password (401 + Basic), then tries the 7 default pairs. A public website is never reported. |
+| 4 | **CVE matching: "fixed in 2.2.8" still matched 2.2.8.** "Before version X" was treated like "up to and including X". | `intel/match.py`, `intel/sync_nvd.py`, `intel/db_init.py` | No more false positives on the fixed version. |
+| 5 | **CVE matching missed OpenSSH 4.7p1 and similar.** "4.7p1" was read as 4.7.1. Letter versions (OpenSSL 1.0.2g vs 1.0.2k) were not ordered. | `intel/match.py` | `4.7p1` is 4.7; `1.0.2g` < `1.0.2h` < `1.0.2k`. |
+| 6 | **Unknown version = "confirmed".** A service with no version was reported as a confirmed match (and got tickets). | `intel/match.py` | It is now "version-unconfirmed" (shown, no ticket), as the design said. |
+| 7 | **PDF report: MITRE mapping was almost empty** (services were never passed to it) and remediated findings were counted as open. | `reports/pdf_report.py` | The report now maps default passwords, telnet, FTP, SSH, databases, KEV and rogue devices to ATT&CK, counts only open findings, and has an Assets table with grades. |
+| 8 | **Score reasons doubled** every time a host was scored again. | `ml/risk_score.py` | Reasons are rebuilt each time. |
+
+### B. Proposal features that were missing or half-done
+
+| # | Feature (proposal) | What was added | Files |
+|---|---|---|---|
+| 1 | **Risk-trend tracking** | After every scan one risk point per host and one for the whole network is saved. The Overview chart now shows real risk (0-100) and open findings over time. | `scanner/uplink.py`, table `risk_history`, `dashboard/app/dashboard/page.tsx` |
+| 2 | **CVE watchlist** | Add / remove CVE IDs on the Vulnerabilities page. A watched CVE found by a scan raises an alert and always gets a ticket. | `dashboard/app/vulnerabilities/page.tsx`, `intel/match.py`, `scanner/uplink.py`, `soar/ticketing.py` |
+| 3 | **PWA push notifications** | The engine now really sends a web push for medium / high / critical notifications to every subscribed browser. Needs VAPID keys (`python -m common.webpush gen-keys`). | `common/webpush.py`, `common/notify.py` (new) |
+| 4 | **Change detection** | New device, port opened, port closed (was the only one before), port reopened, software version changed. Shown in "Recent changes" on the Overview page. | `scanner/uplink.py`, table `asset_changes` |
+| 5 | **HMAC-signed results** | The signature was written but never checked. Stored scan bundles are now verified when read back; the Audit page and `scanner.cli verify-bundles` show the result. | `scanner/uplink.py`, `common/crypto.py`, `api/main.py` |
+| 6 | **Tests + test results** | `tests/` (14 files), `docs/TEST_RESULTS.md`, `docs/LAB_CHECKLIST.md`. | new |
+
+### C. Other improvements
+
+* **Honeypot:** any touch from inside the lab now raises an alert (reputation `internal`);
+  private addresses are never sent to AbuseIPDB / OTX; one alert per source every 5 minutes
+  (every attempt is still stored); the HTTP decoy also records HEAD/PUT/DELETE/OPTIONS and
+  cannot be crashed by a wrong or huge Content-Length.
+* **2FA:** replacing an existing 2FA setup now needs a current code (before, anyone who could
+  reach the API could replace an admin's second factor). Lost phone: `run.bat totp-reset <email>`.
+* **Launcher:** `run.bat update` now also downloads CISA KEV + EPSS, trains the ML model if it
+  is missing, and fetches CVEs for software seen for the first time (then scans once more).
+  New commands: `run.bat test`, `run.bat train`, `run.bat totp-reset <email>`.
+* **Settings page:** new "Engine status" card (trained model or formula, CVE / KEV / EPSS counts,
+  push ready or not), so the demo never claims more than is true.
+* **One notification helper** (`common/notify.py`) replaces four copies of the same code.
+* `.env.example` added (every setting explained, no values).
+
+### D. What you must do once
+
+1. **Supabase → SQL Editor:** run `supabase/migrations/004_trend_changes.sql`
+   (tables `risk_history` and `asset_changes`). Until then scans still work; the trend chart
+   and the changes list stay empty.
+2. `.\run.bat update` (installs the optional `pywebpush` package, downloads KEV + EPSS, trains the model, scans).
+3. `.\run.bat test` and write the result into `docs/TEST_RESULTS.md`.
+4. Optional push: `.venv\Scripts\python -m common.webpush gen-keys`, put the three lines in
+   `.env`, restart, then Settings → "Enable push on this device".
+5. Go through `docs/LAB_CHECKLIST.md` on the live lab.
+
+### E. Honest limits (say them in the viva)
+
+* The test suite proves the logic and the protocols (real SSH, HTTP and TLS on loopback). It does
+  **not** replace the live-lab checklist: real nmap + Npcap, real Metasploitable and real
+  Supabase were not available where the tests were written.
+* Web push was tested with a stand-in for the `pywebpush` package, not with a real browser.
+* The PowerShell launcher changes could not be run here (no PowerShell).
+* The API still trusts the `admin_user_id` sent by the browser for approvals (the 2FA code is the
+  real gate). Checking the Supabase login token in the API is future work.
+
+---
+
 ## v9 — Windows without Docker, full scan ("native" mode) (13 Nov 2026)
 
 **In one line:** with `NETWORK_MODE=native` the whole project runs directly on Windows

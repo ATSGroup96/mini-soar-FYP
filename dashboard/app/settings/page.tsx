@@ -7,7 +7,50 @@ import { useTable } from "@/lib/useData";
 import { api } from "@/lib/api";
 import { enablePush } from "@/lib/push";
 import { Empty } from "@/lib/ui";
-import { QrCode, Bell, Network } from "lucide-react";
+import { QrCode, Bell, Network, Activity } from "lucide-react";
+
+// What the scores and CVE matches rest on right now (from the API /health).
+function EngineCard() {
+  const [h, setH] = useState<any>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    api.health().then(setH).catch((e: any) => setErr(e.message));
+  }, []);
+  const ok = "text-low";
+  const warn = "text-high";
+  return (
+    <div className="card">
+      <div className="text-sm font-semibold mb-2 flex items-center gap-2"><Activity size={16} /> Engine status</div>
+      {err && <div className="text-xs text-critical">API not reachable: {err}</div>}
+      {h && (
+        <ul className="text-sm space-y-1">
+          <li>
+            Risk scoring:{" "}
+            {h.model?.trained
+              ? <span className={ok}>trained PyTorch model{h.model.metrics?.val_mae != null && ` (validation error ${h.model.metrics.val_mae} points)`}</span>
+              : <span className={warn}>expert formula (model not trained yet: run.bat train)</span>}
+          </li>
+          <li>
+            CVE database:{" "}
+            <span className={h.intel?.cves ? ok : warn}>
+              {h.intel?.cves ?? 0} CVEs, {h.intel?.kev ?? 0} KEV, {h.intel?.epss ?? 0} EPSS scores
+            </span>
+            {!(h.intel?.cves && h.intel?.kev && h.intel?.epss) && <span className="text-muted"> (run.bat update downloads them)</span>}
+          </li>
+          <li>
+            Push notifications:{" "}
+            {h.push?.configured
+              ? <span className={ok}>ready</span>
+              : <span className="text-muted">not set up (optional: VAPID keys in .env)</span>}
+          </li>
+          <li>
+            Cloud database: <span className={h.cloud ? ok : warn}>{h.cloud ? "connected" : "not connected"}</span>
+          </li>
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function ScopeCard({ userId }: { userId: string }) {
   const [cur, setCur] = useState<any>(null);
@@ -121,15 +164,20 @@ export default function SettingsPage() {
   const session = useSession();
   useEffect(() => { if (session) setUserId(session.user.id); }, [session]);
   const [qr, setQr] = useState("");
+  const [currentCode, setCurrentCode] = useState("");
+  const [totpMsg, setTotpMsg] = useState("");
   const [pushMsg, setPushMsg] = useState("");
 
   async function enroll() {
+    setTotpMsg("");
     try {
-      const r = await api.enrollTotp(userId);
+      const r = await api.enrollTotp(userId, currentCode);
       setQr(r.qr);
+      setCurrentCode("");
+      setTotpMsg("Scan this QR now. Any older entry for Mini-SOAR in your authenticator app no longer works: delete it.");
     } catch (e: any) {
       setQr("");
-      alert(e.message);
+      setTotpMsg(e.message);
     }
   }
 
@@ -148,6 +196,8 @@ export default function SettingsPage() {
       <Topbar title="Settings" />
       <div className="p-6 space-y-4 max-w-3xl">
         <ConfigNotice />
+
+        <EngineCard />
 
         <ScopeCard userId={userId} />
 
@@ -177,8 +227,16 @@ export default function SettingsPage() {
           <div className="flex gap-2">
             <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm flex-1"
               placeholder="your Supabase user id" value={userId} onChange={(e) => setUserId(e.target.value)} />
+            <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm w-44 font-mono"
+              placeholder="current code (replace)" maxLength={6} value={currentCode}
+              onChange={(e) => setCurrentCode(e.target.value.replace(/\D/g, ""))} />
             <button className="btn btn-primary" onClick={enroll} disabled={!userId}>Generate QR</button>
           </div>
+          <p className="text-xs text-muted mt-2">
+            First time: leave the code empty. To replace an existing 2FA setup, enter a current 6-digit code.
+            Lost the phone? On the engine PC run <span className="font-mono">run.bat totp-reset your@email</span>.
+          </p>
+          {totpMsg && <div className="text-xs text-muted mt-2">{totpMsg}</div>}
           {qr && <img src={qr} alt="TOTP QR" className="mt-3 w-40 h-40 rounded-lg bg-white p-2" />}
         </div>
 
