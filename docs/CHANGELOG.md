@@ -5,6 +5,20 @@ Every change made to the project, newest first, in simple words. Each entry says
 
 ---
 
+## v11 — IP on CVE tickets, push package clash fixed (16 Nov 2026)
+
+**In one line:** CVE ticket titles now show which machine they are on, and the push
+package no longer fights with the rest of the project over the `cryptography` version.
+
+| # | What changed | Files | Why / what it means for you |
+|---|---|---|---|
+| 1 | CVE ticket titles end with the host IP, like the other tickets: `CVE-2007-2446 on netbios-ssn:445 (192.168.56.101)` | `soar/ticketing.py`, `tests/test_soar_flow.py` | With more than one target you can see at a glance which host a CVE ticket belongs to. Only **new** tickets get the new title; existing ones keep their old title (no duplicates are created, tickets are matched by vulnerability, not by title). |
+| 2 | `requirements-push.txt` now pins `py-vapid==1.9.2` and `cryptography==42.0.8` | `requirements-push.txt` | The newest `py-vapid` (1.9.6) needs `cryptography` 46+, but the project pins 42.0.8. pip kept swapping versions and printed a dependency error on `run.bat test`. The older `py-vapid` works with 42.0.8, so nothing else changes. Push is still optional. |
+
+**To apply:** `.\run.bat stop`, `.\run.bat update`, `.\run.bat test`.
+
+---
+
 ## v10 — Tested, fixed, and brought in line with the proposal (15 Nov 2026)
 
 **In one line:** the project now has an automated test suite (421 test cases), eight

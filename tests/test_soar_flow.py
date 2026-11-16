@@ -73,7 +73,7 @@ def test_tickets_opened_for_priority_findings(supa):
     n = ticketing.open_tickets_for_scan([h])
     titles = sorted(t["title"] for t in supa.rows("tickets"))
     assert titles == [
-        "CVE-2011-2523 on ftp:21 [KEV]",
+        "CVE-2011-2523 on ftp:21 [KEV] (192.168.56.101)",
         "Clear-text service telnet:23 (192.168.56.101)",
         "Default credential 'msfadmin' on ssh:22 (192.168.56.101)",
         "Exposed MySQL :3306 (192.168.56.101)",

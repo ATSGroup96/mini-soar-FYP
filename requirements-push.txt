@@ -3,3 +3,7 @@
 # works and push is simply off.
 #   .venv\Scripts\python -m pip install -r requirements-push.txt
 pywebpush==1.14.1
+# py-vapid 1.9.6+ needs cryptography>=46, which clashes with the cryptography==42.0.8
+# pin in requirements.txt. 1.9.2 works with it, so nothing else has to change.
+py-vapid==1.9.2
+cryptography==42.0.8

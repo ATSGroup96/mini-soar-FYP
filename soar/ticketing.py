@@ -60,8 +60,9 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
         return 0
 
     services = {s["id"]: s for s in client.table("services").select("*").execute().data}
-    asset_os = {a["id"]: os_family(a.get("os_guess")) for a in
-                client.table("assets").select("id,os_guess").execute().data}
+    asset_rows = client.table("assets").select("id,ip,os_guess").execute().data
+    asset_os = {a["id"]: os_family(a.get("os_guess")) for a in asset_rows}
+    asset_ip = {a["id"]: a.get("ip") for a in asset_rows}
     vulns = client.table("vulnerabilities").select("*").eq("status", "open").execute().data
     created = 0
 
@@ -78,8 +79,9 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
         svc = services.get(v.get("service_id")) or {}
         sev = v.get("severity") or "medium"
         where = f":{svc['port']}" if svc.get("port") else ""
+        ip = asset_ip.get(v.get("asset_id"))
         title = f"{v['cve_id']} on {svc.get('service_name') or 'service'}{where}" + \
-                (" [KEV]" if v.get("in_kev") else "")
+                (" [KEV]" if v.get("in_kev") else "") + (f" ({ip})" if ip else "")
         if _insert_ticket(client, {
             "vuln_id": v["id"], "asset_id": v["asset_id"], "title": title,
             "description": (v.get("description") or "")[:500],
