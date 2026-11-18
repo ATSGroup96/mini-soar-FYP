@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Topbar from "@/components/Topbar";
 import ConfigNotice from "@/components/ConfigNotice";
 import TopologyGraph from "@/components/TopologyGraph";
+import TwinPanel from "@/components/TwinPanel";
 import { api } from "@/lib/api";
 import { Empty } from "@/lib/ui";
 
@@ -105,6 +106,10 @@ export default function TopologyPage() {
                     ["Default creds", sim.host.before.default_creds, sim.host.after.default_creds],
                     ["Network avg risk", sim.network.network_risk_before, sim.network.network_risk_after],
                     ["Attack paths", sim.network.attack_paths_before, sim.network.attack_paths_after],
+                    ...(sim.twin && !sim.twin.error ? [
+                      ["Twin host risk (CRS)", sim.twin.host_crs_before, sim.twin.host_crs_after],
+                      ["Twin network CRS total", sim.twin.network_total_before, sim.twin.network_total_after],
+                    ] : []),
                   ].map(([label, b, a]) => (
                     <div key={String(label)} className="flex justify-between">
                       <span className="text-muted">{label}</span>
@@ -150,6 +155,8 @@ export default function TopologyPage() {
             </div>
           </div>
         </div>
+
+        <TwinPanel />
       </div>
     </div>
   );

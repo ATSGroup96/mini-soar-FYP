@@ -50,7 +50,19 @@ def create_request(ticket_id: str, asset_ip: str, action_type: str,
         "status": "dry_run", "requested_by": requested_by or None,
     }
     if client:
-        res = client.table("remediations").insert(row).execute()
+        # digital twin: remember what this fix is expected to change, so the
+        # next scan can check the prediction (twin accuracy)
+        from . import twin_store
+        pred = twin_store.prediction_for(client, asset_ip, action_type, params)
+        if pred:
+            row["twin_prediction"] = pred
+        try:
+            res = client.table("remediations").insert(row).execute()
+        except Exception:
+            if "twin_prediction" not in row:
+                raise
+            row.pop("twin_prediction")          # migration 005 not run yet
+            res = client.table("remediations").insert(row).execute()
         row["id"] = res.data[0]["id"]
         if ticket_id:
             client.table("tickets").update({"status": "awaiting_approval"}).eq(

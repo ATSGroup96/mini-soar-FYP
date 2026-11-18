@@ -25,7 +25,7 @@ from common.audit import verify_chain
 from common.db import get_service_client
 from common import scope_store
 from common.audit import log_event
-from soar import approval, digital_twin, attack_path, totp_2fa
+from soar import approval, digital_twin, attack_path, totp_2fa, twin_store
 
 app = FastAPI(title="Mini-SOAR Gateway", version="1.0")
 app.add_middleware(
@@ -166,41 +166,7 @@ def run_scan(req: ScanReq):
 # ----- attack graph + what-if ------------------------------------------------
 def _load_hosts() -> list[dict]:
     """Reassemble host dicts (assets + open services + open vulns) from Supabase."""
-    client = get_service_client()
-    if not client:
-        return []
-    assets = client.table("assets").select("*").execute().data
-    hosts = []
-    for a in assets:
-        svc = client.table("services").select("*").eq("asset_id", a["id"]).execute().data
-        svc = [s for s in svc if (s.get("state") or "open") == "open"]
-        port_of = {s["id"]: s["port"] for s in svc}
-        vulns = (client.table("vulnerabilities").select("*").eq("asset_id", a["id"])
-                 .eq("status", "open").execute().data)
-        seen, vlist = set(), []
-        for v in vulns:
-            port = port_of.get(v.get("service_id"))
-            if v.get("service_id") and port is None:
-                continue  # its service is closed now
-            key = (v["cve_id"], port)
-            if key in seen:
-                continue  # one entry per CVE per port
-            seen.add(key)
-            vlist.append({"cve_id": v["cve_id"], "cvss_score": v.get("cvss_score"),
-                          "epss_score": v.get("epss_score"),
-                          "epss_percentile": v.get("epss_percentile"),
-                          "in_kev": v.get("in_kev"), "port": port,
-                          "confidence": v.get("confidence") or "version-confirmed"})
-        hosts.append({
-            "ip": a["ip"], "hostname": a.get("hostname"),
-            "os_guess": a.get("os_guess"), "is_rogue": a.get("is_rogue"),
-            "risk_score": a.get("risk_score") or 0,
-            "risk_grade": a.get("risk_grade") or "A",
-            "services": [{"port": s["port"], "service_name": s.get("service_name"),
-                          "has_default_cred": s.get("has_default_cred")} for s in svc],
-            "vulnerabilities": vlist,
-        })
-    return hosts
+    return twin_store.load_hosts(get_service_client())
 
 
 @app.get("/attack-graph")
@@ -227,10 +193,91 @@ def whatif(req: WhatIfReq):
     if not host:
         known = ", ".join(sorted(str(h["ip"]).split("/")[0] for h in hosts)) or "none - run a scan first"
         raise HTTPException(404, f"asset {target} not found. Scanned hosts: {known}")
-    return {
+    out = {
         "host": digital_twin.simulate_host(host, fixes),
         "network": digital_twin.simulate_network(hosts, str(host["ip"]), fixes),
     }
+    # dependency-based twin (component risk CRS) for the same fixes
+    try:
+        out["twin"] = twin_store.whatif(get_service_client(), str(host["ip"]), fixes)
+    except Exception as e:
+        out["twin"] = {"error": str(e)[:200]}
+    return out
+
+
+# ----- dependency-based digital twin (Jiang et al. 2024, adapted) -------------
+def _admin(user_id: str) -> dict:
+    prof = _profile(user_id)
+    if prof.get("role") != "admin":
+        raise HTTPException(403, "Only an admin may change the digital twin.")
+    return prof
+
+
+@app.get("/twin")
+def twin():
+    """Components, dependencies, component risk (ours + the paper's baseline),
+    ranked fixes, and how accurate the twin's past predictions were."""
+    return twin_store.overview(get_service_client())
+
+
+class CriticalityReq(BaseModel):
+    admin_user_id: str
+    asset_ip: str
+    criticality: str            # critical | normal | low
+
+
+@app.post("/twin/criticality")
+def twin_criticality(req: CriticalityReq):
+    prof = _admin(req.admin_user_id)
+    try:
+        return twin_store.set_criticality(get_service_client(), req.asset_ip,
+                                          req.criticality.strip().lower(),
+                                          prof.get("email", "admin"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(409, "Could not save. Run supabase/migrations/005_digital_twin.sql "
+                                 f"in Supabase first. ({str(e)[:120]})")
+
+
+class DependencyReq(BaseModel):
+    admin_user_id: str
+    from_component: str         # "IP|os" or "IP|port"  (this one depends on ...)
+    to_component: str           # ... this one
+    rule: str = "network"       # embedding | interaction | data | network
+    enabled: bool = True        # false = hide an automatic dependency
+    note: str = ""
+
+
+@app.post("/twin/dependency")
+def twin_dependency(req: DependencyReq):
+    prof = _admin(req.admin_user_id)
+    try:
+        return twin_store.set_dependency(get_service_client(), req.from_component,
+                                         req.to_component, req.rule.strip().lower(),
+                                         req.enabled, req.note, prof.get("email", "admin"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(409, "Could not save. Run supabase/migrations/005_digital_twin.sql "
+                                 f"in Supabase first. ({str(e)[:120]})")
+
+
+class DependencyRemoveReq(BaseModel):
+    admin_user_id: str
+    id: str
+
+
+@app.post("/twin/dependency/remove")
+def twin_dependency_remove(req: DependencyRemoveReq):
+    prof = _admin(req.admin_user_id)
+    try:
+        return {"removed": twin_store.remove_dependency(get_service_client(), req.id,
+                                                        prof.get("email", "admin"))}
+    except Exception as e:
+        raise HTTPException(409, str(e)[:200])
 
 
 # ----- remediation -----------------------------------------------------------

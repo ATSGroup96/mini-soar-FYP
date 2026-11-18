@@ -69,7 +69,16 @@ Lab used here: engine PC `192.168.56.1`, Metasploitable 2 `192.168.56.101`.
 | # | Step | Expected result | OK? |
 |---|---|---|---|
 | 6.1 | Topology page | attacker → 192.168.56.101 edge with reasons (KEV / default cred) | |
-| 6.2 | What-if: block port 21 | before / after risk, exposure and counts; nothing changes on the host | |
+| 6.2 | What-if: block port 21 | before / after risk, exposure and counts, plus "Twin host risk (CRS)" and "Twin network CRS total" going down; nothing changes on the host | |
+| 6.3 | Supabase → SQL Editor → run `supabase/migrations/005_digital_twin.sql` | "Success"; the orange "Running with defaults" note on the Topology twin panel disappears after a refresh | |
+| 6.4 | Topology → Digital twin panel | components listed (OS + every service of .101); the OS has the most "Depend on it"; "Block port 21 (ftp)" (vsftpd backdoor) near the top of "Patch priority" | |
+| 6.5 | Click "Compare with paper baseline" | a second list (CVSS-only formula); the four boxes show "dangerous fixes in top 5" for ours vs. baseline | |
+| 6.6 | Assets → set 192.168.56.101 "Importance" to **low**, then back to **critical** | message "is now ..."; on Topology (Refresh) every component's Weight changes and CRS numbers go down (low) / up (critical) | |
+| 6.7 | Topology → add dependency `192.168.56.101|21` → `192.168.56.101|3306`, rule data | appears in the list as "manual"; mysql:3306 "Depend on it" +1. Then **Remove** it | |
+| 6.8 | Hide an automatic one (Hide next to `…|23 → …|os`) | it disappears from the list; telnet no longer counts towards the OS | |
+| 6.9 | Tickets → request a fix (e.g. block port 23), approve with 2FA, wait for "succeeded / verified" | Supabase → remediations: the row has `twin_prediction` (closed_ports [23]) | |
+| 6.10 | Run a new scan | scan summary shows `twin_checked: 1`; Topology twin panel: "Twin accuracy" 100% (1/1) and a ✓ line under "Twin checks". Then roll back the fix | |
+| 6.11 | As a viewer (non-admin) account, change Importance | refused: "Only an admin may change the digital twin" | |
 
 ## 7. Honeypot
 

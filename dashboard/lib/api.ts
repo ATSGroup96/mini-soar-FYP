@@ -57,5 +57,18 @@ export const api = {
   enrollTotp: (user_id: string, current_code = "") =>
     call("/totp/enroll", { method: "POST", body: JSON.stringify({ user_id, current_code }) }),
   verifyAudit: () => call("/audit/verify"),
+  // dependency-based digital twin (Jiang et al. 2024, adapted)
+  twin: () => call("/twin"),
+  setCriticality: (admin_user_id: string, asset_ip: string, criticality: string) =>
+    call("/twin/criticality", {
+      method: "POST",
+      body: JSON.stringify({ admin_user_id, asset_ip, criticality }),
+    }),
+  setDependency: (payload: {
+    admin_user_id: string; from_component: string; to_component: string;
+    rule: string; enabled?: boolean; note?: string;
+  }) => call("/twin/dependency", { method: "POST", body: JSON.stringify(payload) }),
+  removeDependency: (admin_user_id: string, id: string) =>
+    call("/twin/dependency/remove", { method: "POST", body: JSON.stringify({ admin_user_id, id }) }),
   reportUrl: () => `${API}/report/latest.pdf`,
 };

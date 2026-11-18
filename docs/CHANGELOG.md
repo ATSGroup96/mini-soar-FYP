@@ -5,6 +5,38 @@ Every change made to the project, newest first, in simple words. Each entry says
 
 ---
 
+## v13 — Dependency-based digital twin, adapted from Jiang et al. (2024) (18 Nov 2026)
+
+**In one line:** the digital twin is now a model of components (OS + each service) and their
+dependencies. It computes component risk CRS = criticality × vulnerability score, ranks fixes by
+virtual patching, compares itself with the paper's own CVSS-only formula, and checks its
+predictions against the real re-scan after each fix (twin accuracy). Full method:
+`docs/DIGITAL_TWIN.md`.
+
+| # | What changed | Files | What it means for you |
+|---|---|---|---|
+| 1 | New twin model: components, dependency rules (embedding, data, interaction, network), CCS, CVS, CRS, fix ranking, paper baseline, prediction check | `soar/twin_model.py` (new) | The research-backed core. All weights are in one place at the top of the file |
+| 2 | Loading the network for the twin, storing predictions, checking them after a scan | `soar/twin_store.py` (new); `api/main.py` `_load_hosts` now uses it (same result as before) | — |
+| 3 | A fix request now stores the twin's prediction (`twin_prediction`) | `soar/approval.py` | If migration 005 isn't run yet, the request still works, just without a prediction |
+| 4 | Every scan checks the predictions of verified fixes (`twin_checked` in the scan summary) | `scanner/engine.py` | A twin error can never break a scan |
+| 5 | API: `GET /twin`, `POST /twin/criticality`, `POST /twin/dependency`, `POST /twin/dependency/remove`; `/whatif` also returns `twin` | `api/main.py`, `dashboard/lib/api.ts` | Changes need an admin account; all are in the audit log |
+| 6 | Dashboard: Digital twin panel on Topology (patch priority, components, dependencies, baseline comparison, accuracy); "Importance" column on Assets; twin rows in the what-if box | `dashboard/components/TwinPanel.tsx` (new), `dashboard/app/topology/page.tsx`, `dashboard/app/assets/page.tsx` | — |
+| 7 | Database: `assets.criticality`, table `twin_dependencies`, `remediations.twin_prediction` / `twin_result` | `supabase/migrations/005_digital_twin.sql` (new), `supabase/schema.sql` | **Run 005 once in the Supabase SQL Editor** |
+| 8 | 47 new tests, including the full chain scan → prediction → fix → re-scan → accuracy | `tests/test_twin.py` (new) | — |
+| 9 | Method, formulas, paper mapping, limitations; smoke-test steps 6.2–6.11 | `docs/DIGITAL_TWIN.md` (new), `docs/LAB_CHECKLIST.md` | Use them for the report and the viva |
+
+**What stays the same:** scanner, CVE matching, the per-finding ML risk and the A–F grade, tickets,
+the old what-if numbers, remediation, 2FA, honeypot, audit log, reports.
+
+**Found by the tests while building it:** a prediction made for one fix looked wrong when two
+fixes were applied before the same re-scan. Predictions for the same host are now checked
+together.
+
+**To apply:** run `005_digital_twin.sql` in Supabase, then `.\run.bat stop`, `.\run.bat update`,
+`.\run.bat test`.
+
+---
+
 ## v12 — Correct CVE matches per service, watchlist tickets, dashboard stop, audit out of git (18 Nov 2026)
 
 **In one line:** found by running the whole pipeline on the real Metasploitable scan: OpenSSH,

@@ -141,6 +141,13 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
     except Exception as e:
         log_event("engine", "ticketing.error", "", {"error": str(e)[:200]})
 
+    # digital twin: check the predictions of fixes verified since the last scan
+    try:
+        from soar.twin_store import evaluate_pending
+        scan_meta["summary"]["twin_checked"] = evaluate_pending(host_results)
+    except Exception as e:
+        log_event("engine", "twin.check.error", "", {"error": str(e)[:200]})
+
     # the scan row was written before the ticket step: store the final summary
     if result.get("scan_id"):
         try:
