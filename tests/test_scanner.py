@@ -169,6 +169,47 @@ def test_host_timeout_setting(monkeypatch, set_env):
     assert "--host-timeout 300s" in fake.calls[2]["arguments"]
 
 
+def _xml_ports(ports: dict) -> str:
+    """nmap XML for META with {port: [cpe, ...]}."""
+    body = "".join(
+        f'<port protocol="tcp" portid="{p}"><state state="open"/><service name="x">'
+        + "".join(f"<cpe>{c}</cpe>" for c in cpes) + "</service></port>"
+        for p, cpes in ports.items())
+    return (f'<nmaprun><host><status state="up"/><address addr="{META}" addrtype="ipv4"/>'
+            f"<ports>{body}</ports></host></nmaprun>")
+
+
+def test_application_cpe_wins_over_operating_system_cpe(monkeypatch):
+    """Real Metasploitable case: nmap lists OpenSSH's own CPE and then the OS CPE.
+    python-nmap keeps the last one (linux_kernel); the scanner must keep OpenSSH's."""
+    scan = {"tcp": {
+        22: {"state": "open", "name": "ssh", "product": "OpenSSH", "version": "4.7p1 Debian 8ubuntu1",
+             "cpe": "cpe:/o:linux:linux_kernel"},                       # what python-nmap gives
+        23: {"state": "open", "name": "telnet", "product": "Linux telnetd", "version": "",
+             "cpe": "cpe:/o:linux:linux_kernel"},
+        80: {"state": "open", "name": "http", "product": "Apache httpd", "version": "2.2.8",
+             "cpe": "cpe:/a:apache:http_server:2.2.8"}}}
+    xml = _xml_ports({22: ["cpe:/a:openbsd:openssh:4.7p1", "cpe:/o:linux:linux_kernel"],
+                      23: ["cpe:/o:linux:linux_kernel"],
+                      80: ["cpe:/a:apache:http_server:2.2.8"]})
+    use_nmap(monkeypatch, FakeNmap({META: scan}, raw_xml=xml))
+    cpes = {s.port: s.cpe for s in port_scan.scan_host(META).services}
+    assert cpes == {22: "cpe:/a:openbsd:openssh:4.7p1",               # fixed
+                    23: "cpe:/o:linux:linux_kernel",                  # only an OS CPE: kept as is
+                    80: "cpe:/a:apache:http_server:2.2.8"}            # unchanged
+
+
+def test_cpe_without_raw_xml_falls_back_to_python_nmap(monkeypatch):
+    use_nmap(monkeypatch, FakeNmap({META: META_SCAN}))                 # no XML available
+    assert port_scan.scan_host(META).services[0].cpe == "cpe:/a:vsftpd:vsftpd:2.3.4"
+
+
+def test_broken_xml_is_harmless(monkeypatch):
+    use_nmap(monkeypatch, FakeNmap({META: META_SCAN}, raw_xml="<nmaprun><host"))
+    r = port_scan.scan_host(META)
+    assert r.scan_ok is True and r.services[0].cpe == "cpe:/a:vsftpd:vsftpd:2.3.4"
+
+
 def test_host_with_really_no_open_ports_is_ok(monkeypatch):
     use_nmap(monkeypatch, FakeNmap({META: {"tcp": {21: {"state": "closed", "name": "ftp"}}}}))
     r = port_scan.scan_host(META)

@@ -123,7 +123,7 @@ scope_store reads Windows adapters via PowerShell Get-NetIPAddress; netmode.nmap
 Guide: docs/WINDOWS_NATIVE.md. Not run here: real Windows PC.
 
 ## v10 (2026-11-15): tests, bug fixes, proposal alignment
-tests/ (pytest, 421 cases; `run.bat test`; conftest switches off python-dotenv, replaces Supabase with
+tests/ (pytest, 421 cases at v10; `run.bat test`; conftest switches off python-dotenv, replaces Supabase with
 tests/fakes.FakeSupabase and only allows loopback sockets; tests/ssh_server.py = real paramiko SSH server on
 loopback). Fixed: failed/timed-out port scan no longer closes anything (HostScan.scan_ok, nmap XML timedout flag,
 SCAN_HOST_TIMEOUT default 300 s; uplink + ticketing skip such hosts); SSH honeypot now subclasses
@@ -140,3 +140,13 @@ test / train / totp-reset, .env.example. Honeypot: internal source = always aler
 reputation services, alert throttle 5 min per (source, service).
 Not run here: PowerShell launchers, real nmap/Npcap, real Supabase, pywebpush with a real browser, torch training
 (test skipped without torch). Live checks: docs/LAB_CHECKLIST.md.
+
+## v12 (2026-11-18): real-data fixes
+A: scanner/port_scan._application_cpes reads every <cpe> per port from nmap's XML and keeps the first cpe:/a:
+(python-nmap keeps the LAST, usually the OS cpe:/o:linux:linux_kernel); intel.match.service_identity ignores
+non-application CPEs; sync_nvd._store skips cpeMatch with vulnerable=false. Real Metasploitable data: 529 -> 517 CVEs
+(13 wrong kernel matches on 22/23/512 removed, CVE-2023-48795 added on 22). C: watchlisted unconfirmed CVE ->
+ticket titled "... [unconfirmed] (ip)". D: start-native.ps1 dev mode runs `node node_modules\next\dist\bin\next dev`
+(PID = node) + Stop-StrayDashboard (node.exe whose command line contains the dashboard folder). E: audit/ in
+.gitignore; user must `git rm -r --cached audit`. Tests: 436 (435 pass, 1 skip). Real-data flow script lived
+outside the repo (sandbox); 57/57.

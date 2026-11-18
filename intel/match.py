@@ -179,6 +179,30 @@ def match_service(conn, product: str, version: str, port: int,
     return result
 
 
+def service_identity(svc: dict) -> tuple[str, str]:
+    """
+    (product, version) to look a service up with.
+
+    An APPLICATION CPE from nmap (cpe:/a:apache:http_server:2.2.8) is preferred:
+    its product name is the one NVD uses, unlike the display name. An operating
+    system or hardware CPE (cpe:/o:linux:linux_kernel) describes the machine,
+    not the program on the port, so it is ignored and the display name is used.
+    """
+    product = svc.get("product") or svc.get("service_name") or ""
+    version = svc.get("version") or ""
+    cpe = (svc.get("cpe") or "").strip()
+    parts: list[str] = []
+    if cpe.startswith("cpe:/a:"):
+        parts = cpe[len("cpe:/"):].split(":")          # a, vendor, product, version
+    elif cpe.startswith("cpe:2.3:a:"):
+        parts = cpe[len("cpe:2.3:"):].split(":")
+    if len(parts) > 2 and parts[2]:
+        product = parts[2]
+    if len(parts) > 3 and parts[3] not in ("", "*", "-") and not version:
+        version = parts[3]
+    return product, version
+
+
 def match_host(host_result: dict) -> list[dict]:
     """Match every service on a host; returns a list of vuln dicts."""
     conn = get_intel_db()
@@ -186,17 +210,7 @@ def match_host(host_result: dict) -> list[dict]:
     out: list[dict] = []
     try:
         for svc in host_result.get("services", []):
-            product = svc.get("product") or svc.get("service_name") or ""
-            version = svc.get("version") or ""
-            # Prefer nmap's CPE (e.g. cpe:/a:apache:http_server:2.2.8): its
-            # product name is the one NVD uses, unlike the display product.
-            cpe = svc.get("cpe") or ""
-            if cpe.startswith("cpe:/"):
-                parts = cpe.split(":")
-                if len(parts) > 3 and parts[3]:
-                    product = parts[3]
-                if len(parts) > 4 and parts[4] and not version:
-                    version = parts[4]
+            product, version = service_identity(svc)
             seen = {o["cve_id"] for o in out if o.get("port") == svc.get("port")}
             for m in match_service(conn, product, version, svc.get("port"), watch):
                 if m.cve_id not in seen:

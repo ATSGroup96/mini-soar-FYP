@@ -47,7 +47,8 @@ function WatchlistCard({ rows, error, reload }: { rows: any[]; error: string | n
       <div className="text-sm font-semibold mb-1">CVE watchlist</div>
       <p className="text-xs text-muted mb-3">
         Add a CVE you are worried about. When a scan finds it on any host you get an alert and a ticket,
-        whatever its score.
+        whatever its score. If the installed version cannot be confirmed, the ticket is marked
+        &quot;[unconfirmed]&quot;: check the version on the host first.
       </p>
       <div className="flex flex-wrap gap-2 items-center">
         <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm w-48 font-mono"

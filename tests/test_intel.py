@@ -176,6 +176,47 @@ def test_match_host_reads_cloud_watchlist(intel_db, supa, host):
     assert next(v for v in out if v["cve_id"] == "CVE-2011-2523")["on_watchlist"] is True
 
 
+@pytest.mark.parametrize("svc,expected", [
+    ({"product": "Apache httpd", "version": "2.2.8", "cpe": "cpe:/a:apache:http_server:2.2.8"},
+     ("http_server", "2.2.8")),
+    ({"product": "vsftpd", "version": "", "cpe": "cpe:/a:vsftpd:vsftpd:2.3.4"}, ("vsftpd", "2.3.4")),
+    ({"product": "OpenSSH", "version": "4.7p1", "cpe": "cpe:/o:linux:linux_kernel"}, ("OpenSSH", "4.7p1")),
+    ({"product": "", "service_name": "telnet", "version": "", "cpe": "cpe:/o:linux:linux_kernel"}, ("telnet", "")),
+    ({"product": "Cisco", "version": "", "cpe": "cpe:/h:cisco:router"}, ("Cisco", "")),
+    ({"product": "X", "version": "", "cpe": "cpe:2.3:a:openbsd:openssh:7.4:*:*:*:*:*:*:*"}, ("openssh", "7.4")),
+    ({"product": "Samba smbd", "version": "", "cpe": "cpe:/a:samba:samba"}, ("samba", "")),
+    ({"product": "X", "version": "", "cpe": "cpe:/a:vendor:prod:-"}, ("prod", "")),
+])
+def test_service_identity(svc, expected):
+    assert match.service_identity(svc) == expected
+
+
+def test_os_cpe_does_not_turn_a_service_into_the_kernel(intel_db):
+    """Real Metasploitable case: OpenSSH reported with the OS CPE. Before the fix it
+    was matched as 'linux_kernel' (platform rows of Ruby/Apache/Samba CVEs)."""
+    sync_nvd._store(intel_db, [nvd_item("CVE-2020-10933", 5.3,
+                                        "cpe:2.3:o:linux:linux_kernel:-:*:*:*:*:*:*:*")])
+    intel_db.commit()
+    h = {"ip": "192.168.56.101", "services": [
+        {"port": 22, "product": "OpenSSH", "version": "4.7p1 Debian 8ubuntu1",
+         "cpe": "cpe:/o:linux:linux_kernel"},
+        {"port": 23, "product": "Linux telnetd", "version": "", "cpe": "cpe:/o:linux:linux_kernel"}]}
+    out = {(v["cve_id"], v["port"]) for v in match.match_host(h)}
+    assert ("CVE-2020-10933", 22) not in out and ("CVE-2020-10933", 23) not in out
+    assert ("CVE-2008-0166", 22) in out and ("CVE-2007-0005", 22) in out    # found by the name OpenSSH
+
+
+def test_platform_only_rows_are_not_stored(intel_db):
+    """NVD marks 'runs on' platforms vulnerable=false; they must not become matches."""
+    item = nvd_item("CVE-2020-10933", 5.3, "cpe:2.3:a:ruby-lang:ruby:*:*:*:*:*:*:*:*",
+                    start_inc="2.5.0", end_inc="2.5.7")
+    item["cve"]["configurations"][0]["nodes"].append({"cpeMatch": [
+        {"criteria": "cpe:2.3:o:linux:linux_kernel:-:*:*:*:*:*:*:*", "vulnerable": False}]})
+    sync_nvd._store(intel_db, [item])
+    rows = intel_db.execute("select product from cpe_match where cve_id='CVE-2020-10933'").fetchall()
+    assert [r["product"] for r in rows] == ["ruby"]
+
+
 def test_match_host_without_database_rows_is_empty(host):
     db_init.init_db()
     assert match.match_host(host) == []

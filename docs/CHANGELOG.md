@@ -5,6 +5,43 @@ Every change made to the project, newest first, in simple words. Each entry says
 
 ---
 
+## v12 — Correct CVE matches per service, watchlist tickets, dashboard stop, audit out of git (18 Nov 2026)
+
+**In one line:** found by running the whole pipeline on the real Metasploitable scan: OpenSSH,
+telnet and rexec no longer get Linux-kernel CVEs, a watched CVE always gets a ticket,
+`run.bat stop` really stops the dashboard in dev mode, and the audit trail stays out of git.
+
+| # | What was wrong | What changed | Files |
+|---|---|---|---|
+| A | nmap lists two CPEs for some services (the program and the operating system, e.g. `cpe:/a:openbsd:openssh:4.7p1` and `cpe:/o:linux:linux_kernel`). python-nmap keeps only the last one, so OpenSSH (22), telnet (23) and rexec (512) were looked up as "linux kernel": **13 wrong CVEs** (Ruby, Apache, Samba CVEs that only *run on* Linux) and the real OpenSSH CVEs were never downloaded (1 in the database). | The scanner reads all CPEs from nmap's XML and keeps the program's one. The matcher never lets an OS/hardware CPE replace the product name (it uses the name, e.g. "OpenSSH"). NVD rows marked `vulnerable: false` ("runs on" platforms) are no longer stored. | `scanner/port_scan.py`, `intel/match.py`, `intel/sync_nvd.py` |
+| C | A watched CVE whose version match was only a "maybe" raised an alert but got **no ticket**, although the Vulnerabilities page promises one. | It now gets a ticket tagged `[unconfirmed]`, with "check the version on the host before fixing" in the description. Unwatched unconfirmed matches still get no ticket (as before). | `soar/ticketing.py`, `dashboard/app/vulnerabilities/page.tsx` |
+| D | In dev mode the dashboard was started through `npm.cmd`, so the saved PID was a `cmd` window. `run.bat stop` skipped it, and the next start failed with "port 3000 already in use" (seen in `logs\dashboard.err.log`). | Next.js is started with `node` directly (the PID is the dashboard). Before a start and on `stop`, a leftover dashboard from the old launcher (a node.exe running from this project's dashboard folder) is stopped once. | `start-native.ps1` |
+| E | `audit/audit_chain.jsonl` (emails, IPs, honeypot usernames/passwords) was committed to git; `.gitignore` only covered `audit/*.log`. | `audit/` added to `.gitignore`. **You must also untrack it once** (below). | `.gitignore` |
+
+**Effect on the real Metasploitable data** (same scan, same CVE database): 529 → 517 CVEs.
+The 13 wrong matches on ports 22 / 23 / 512 are gone, and 1 real OpenSSH CVE (CVE-2023-48795) is
+now found. CVE tickets (34) and the grade (F) are unchanged. More OpenSSH CVEs arrive after
+`.\run.bat update`, because the scanner now reports OpenSSH's own CPE and the sync fetches it.
+
+**Tests:** 436 test cases (15 new), 435 passed, 1 skipped (training, needs PyTorch). The new
+tests fail on the v11 code and pass on v12. Real-data flow: 57 of 57 checks passed.
+**Not run here:** the PowerShell change (no PowerShell in the test sandbox; checked by review and
+a bracket/quote parse).
+
+**To apply:**
+1. `.\run.bat stop`, then `.\run.bat update` (re-downloads CVE data for the lab software without
+   the platform rows, fetches OpenSSH CVEs, scans).
+2. `.\run.bat test`
+3. Take the audit trail out of git (it stays on your disk), then commit:
+   ```
+   git rm -r --cached audit
+   git commit -m "Stop tracking the local audit trail"
+   ```
+   The old copies stay in the GitHub history. The repo is private; if you want them removed from
+   history too, ask before doing it (it rewrites history for the whole team).
+
+---
+
 ## v11 — IP on CVE tickets, push package clash fixed (16 Nov 2026)
 
 **In one line:** CVE ticket titles now show which machine they are on, and the push

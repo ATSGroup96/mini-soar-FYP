@@ -14,6 +14,7 @@ Lab used here: engine PC `192.168.56.1`, Metasploitable 2 `192.168.56.101`.
 | 0.2 | `.\run.bat update` | packages installed; "KEV sync complete", "EPSS sync complete"; "Saved model"; a scan runs | |
 | 0.3 | `.\run.bat test` | all tests pass, 0 failed (the ML training test also runs here) | |
 | 0.4 | Dashboard → Settings → Engine status | "trained PyTorch model", CVE / KEV / EPSS counts above 0, cloud "connected" | |
+| 0.5 | `.\run.bat stop`, wait, then open http://localhost:3000 | page does not load (the dashboard really stopped). Then `.\run.bat` again | |
 
 ## 1. Scan (proposal: discovery, ports, OS, shadow-IT, default credentials, TLS)
 
@@ -22,6 +23,7 @@ Lab used here: engine PC `192.168.56.1`, Metasploitable 2 `192.168.56.101`.
 | 1.1 | `.\run.bat scan 192.168.56.101` | about 20+ services, OS "Linux 2.6.x", MAC shown, "1 default-cred" or more | |
 | 1.2 | Assets page | host listed with a grade (D or F), marked rogue until you authorize it | |
 | 1.3 | Vulnerabilities page | CVEs with CVSS, EPSS %, KEV badge; click "explain" → reasons | |
+| 1.3b | Vulnerabilities page, filter port 22 / 23 / 512 | port 22 shows OpenSSH CVEs (e.g. CVE-2023-48795); ports 23 and 512 show **no** CVEs | |
 | 1.4 | TLS Certs page | certificates of port 25 / 5432 shown (expired, self-signed) | |
 | 1.5 | `.\run.bat scan 8.8.8.8` | nothing scanned ("0 hosts"); `scope.reject` in the Audit page | |
 
@@ -47,6 +49,7 @@ Lab used here: engine PC `192.168.56.1`, Metasploitable 2 `192.168.56.101`.
 |---|---|---|---|
 | 4.1 | Vulnerabilities → CVE watchlist → add a CVE that the host has but that has no ticket (medium / low) | chip appears | |
 | 4.2 | Scan again | notification "Watchlisted CVE found"; "watchlist" badge on the row; a ticket for it | |
+| 4.3 | Add a CVE whose row says "unconfirmed", scan again | a ticket titled "... [unconfirmed] (192.168.56.101)" | |
 
 ## 5. Fix with approval, 2FA, verify, rollback
 

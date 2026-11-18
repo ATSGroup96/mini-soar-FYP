@@ -3,7 +3,8 @@ Ticket creation + SLA timers + escalation + auto-suggested fixes.
 
 After a scan:
   * open a ticket for each high-priority CVE (KEV, critical, ML risk >= 70,
-    or on the team's CVE watchlist)
+    or on the team's CVE watchlist). Unconfirmed version matches get a ticket
+    only when the CVE is on the watchlist (title tagged [unconfirmed])
   * open a ticket for each default credential and each clear-text login service
   * attach an auto-suggested remediation playbook (soar/playbooks.py) to every
     ticket, so the analyst only confirms it
@@ -68,10 +69,13 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
 
     # ---- CVE tickets ---------------------------------------------------------
     for v in vulns:
+        watched = WATCHLIST_REASON in (v.get("ml_reasons") or [])
+        unconfirmed = v.get("confidence") == "version-unconfirmed"
         priority = (v.get("in_kev") or (v.get("severity") == "critical")
-                    or (v.get("ml_risk_score") or 0) >= PRIORITY_RISK
-                    or WATCHLIST_REASON in (v.get("ml_reasons") or []))
-        if not priority or v.get("confidence") == "version-unconfirmed":
+                    or (v.get("ml_risk_score") or 0) >= PRIORITY_RISK or watched)
+        # an unconfirmed match ("this version MAY be affected") only gets a
+        # ticket when the team asked for this CVE on the watchlist
+        if not priority or (unconfirmed and not watched):
             continue
         existing = client.table("tickets").select("id").eq("vuln_id", v["id"]).execute().data
         if existing:
@@ -81,10 +85,15 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
         where = f":{svc['port']}" if svc.get("port") else ""
         ip = asset_ip.get(v.get("asset_id"))
         title = f"{v['cve_id']} on {svc.get('service_name') or 'service'}{where}" + \
-                (" [KEV]" if v.get("in_kev") else "") + (f" ({ip})" if ip else "")
+                (" [KEV]" if v.get("in_kev") else "") + \
+                (" [unconfirmed]" if unconfirmed else "") + (f" ({ip})" if ip else "")
+        description = (v.get("description") or "")[:500]
+        if unconfirmed:
+            description = ("On the CVE watchlist. The installed version could not be confirmed as "
+                           "affected: check the version on the host before fixing. " + description)[:500]
         if _insert_ticket(client, {
             "vuln_id": v["id"], "asset_id": v["asset_id"], "title": title,
-            "description": (v.get("description") or "")[:500],
+            "description": description,
             "severity": sev, "status": "open", "sla_due_at": _sla_due(sev),
             "suggested_action": playbooks.suggest(svc, cve=v, os=asset_os.get(v["asset_id"], "linux")),
         }):

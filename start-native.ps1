@@ -75,6 +75,18 @@ function Get-SvcPid($name) {
   return $null
 }
 
+function Stop-StrayDashboard {
+  # A dashboard started by an older launcher (through npm.cmd) saved the PID of a
+  # cmd window, so it could not be stopped and kept port 3000 busy. Stop any
+  # node.exe running from THIS project's dashboard folder.
+  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and ($_.CommandLine.IndexOf($Dash, [StringComparison]::OrdinalIgnoreCase) -ge 0) } |
+    ForEach-Object {
+      & taskkill /PID $_.ProcessId /T /F *> $null
+      Ok "leftover dashboard process $($_.ProcessId) stopped"
+    }
+}
+
 function Stop-All {
   foreach ($s in $Services) {
     $procId = Get-SvcPid $s
@@ -85,6 +97,7 @@ function Stop-All {
     }
     Remove-Item (Join-Path $PidDir "$s.pid") -Force -ErrorAction SilentlyContinue
   }
+  Stop-StrayDashboard
 }
 
 function Read-DotEnv {
@@ -273,12 +286,17 @@ Start-PySvc "honeypot" @("honeypot.run")
 
 if (Get-SvcPid "dashboard") { Ok "dashboard already running" }
 elseif ($DevMode) {
+  Stop-StrayDashboard
+  # run Next.js with node directly (not through npm.cmd): then the saved PID is
+  # the dashboard itself, so "run.bat stop" can stop it
+  $NextBin = Join-Path $Dash "node_modules\next\dist\bin\next"
+  if (-not (Test-Path $NextBin)) { Bad "Next.js not installed in dashboard\node_modules: run .\run.bat update"; exit 1 }
   $envs = Read-DotEnv
   foreach ($k in @("NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "NEXT_PUBLIC_API_URL", "NEXT_PUBLIC_VAPID_PUBLIC_KEY")) {
     if ($envs.ContainsKey($k) -and $envs[$k]) { Set-Item -Path "env:$k" -Value $envs[$k] }
   }
   $env:NEXT_TELEMETRY_DISABLED = "1"; $env:NODE_ENV = "development"
-  $p = Start-Process -FilePath "npm.cmd" -ArgumentList @("run", "dev", "--", "-H", "0.0.0.0", "-p", "3000") `
+  $p = Start-Process -FilePath "node" -ArgumentList @("`"$NextBin`"", "dev", "-H", "0.0.0.0", "-p", "3000") `
          -WorkingDirectory $Dash -WindowStyle Hidden `
          -RedirectStandardOutput (Join-Path $LogDir "dashboard.log") `
          -RedirectStandardError (Join-Path $LogDir "dashboard.err.log") -PassThru
@@ -286,6 +304,7 @@ elseif ($DevMode) {
   Ok "dashboard started in DEV mode (log: logs\dashboard.log)"
 }
 else {
+  Stop-StrayDashboard
   $env:HOSTNAME = "0.0.0.0"; $env:PORT = "3000"; $env:NODE_ENV = "production"
   $p = Start-Process -FilePath "node" -ArgumentList "server.js" -WorkingDirectory $DashOut -WindowStyle Hidden `
          -RedirectStandardOutput (Join-Path $LogDir "dashboard.log") `

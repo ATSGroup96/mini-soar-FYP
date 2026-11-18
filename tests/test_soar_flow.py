@@ -131,6 +131,30 @@ def test_low_risk_cve_gets_no_ticket_but_watchlisted_one_does(supa):
     assert len(by_title(supa, "CVE-2020-2222")) == 1
 
 
+def test_watchlisted_unconfirmed_cve_gets_a_marked_ticket(supa):
+    """The watchlist promises a ticket. When the version match is only a maybe,
+    the ticket still opens, tagged [unconfirmed] with a 'check the version' note."""
+    h = make_host()
+    for v in h["vulnerabilities"]:
+        v["confidence"] = "version-unconfirmed"
+    h["vulnerabilities"][1]["on_watchlist"] = True                      # CVE-2008-0166 on ssh:22
+    ticketing.open_tickets_for_scan([scan(supa, h)])
+    cve = by_title(supa, "CVE-")
+    assert [t["title"] for t in cve] == ["CVE-2008-0166 on ssh:22 [unconfirmed] (192.168.56.101)"]
+    assert cve[0]["description"].startswith("On the CVE watchlist. The installed version could not be confirmed")
+    assert len(cve[0]["description"]) <= 500
+    # the other unconfirmed CVE (not watched) still gets no ticket
+    assert by_title(supa, "CVE-2011-2523") == []
+
+
+def test_watchlisted_confirmed_ticket_has_no_unconfirmed_tag(supa):
+    h = make_host()
+    h["vulnerabilities"][1]["on_watchlist"] = True
+    ticketing.open_tickets_for_scan([scan(supa, h)])
+    t = by_title(supa, "CVE-2008-0166")[0]
+    assert "[unconfirmed]" not in t["title"] and not t["description"].startswith("On the CVE watchlist")
+
+
 def test_overdue_tickets_are_escalated_once(supa):
     ticketing.open_tickets_for_scan([scan(supa)])
     t = by_title(supa, "Clear-text")[0]

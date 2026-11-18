@@ -13,15 +13,20 @@ Automated test suite in `tests/` (pytest). Run it on the project PC with:
 
 | | |
 |---|---|
-| Date | 15 Nov 2026 |
+| Date | 18 Nov 2026 (v12) |
 | Where | Development sandbox (Linux, Python 3.13) with the project's own paramiko 3.4.0, FastAPI 0.111 and pyotp 2.9; not the project PC |
-| Total test cases | 421 |
-| Passed | 420 |
+| Total test cases | 436 |
+| Passed | 435 |
 | Failed | 0 |
 | Skipped | 1 (ML training: needs PyTorch, which the sandbox does not have) |
 
-**Still to do:** run `.\run.bat test` on the project PC (Windows, Python 3.11, PyTorch
-installed) and write that result here. The training test runs there.
+**Real-data flow (18 Nov 2026):** the whole pipeline was also run on the project PC's real data
+(Metasploitable 2 scan of 16 Nov + the PC's CVE database with 1,257 CVEs, 1,781 KEV, 406,615 EPSS):
+57 of 57 checks passed (scan, CVE match, ML score, upload, tickets, approve with 2FA, fix, verify,
+rollback, re-scan, change detection, failed-scan safety, watchlist, attack paths, what-if, honeypot,
+push, PDF + MITRE, audit + signature checks).
+
+**Still to do:** run `.\run.bat test` on the project PC after v12 and note the result here.
 
 ## How the tests are kept safe
 
@@ -55,15 +60,15 @@ So the tests prove the logic and the protocols. They do not prove the live lab
 | Safety guard | `tests/test_common_scope.py` | Authorization gate, allowlist, never-touch list, dashboard scope rules | 32 | 32 | 0 | 0 |
 | End to end | `tests/test_engine_e2e.py` | Scan -> tickets -> approve -> fix -> re-scan -> closed; CLI | 12 | 12 | 0 | 0 |
 | Honeypot | `tests/test_honeypot.py` | Fake SSH + HTTP over real connections, alerts, IP reputation | 32 | 32 | 0 | 0 |
-| CVE intelligence | `tests/test_intel.py` | NVD/EPSS/KEV sync, version matching, watchlist | 41 | 41 | 0 | 0 |
+| CVE intelligence | `tests/test_intel.py` | NVD/EPSS/KEV sync, version matching, watchlist | 51 | 51 | 0 | 0 |
 | ML risk scoring | `tests/test_ml.py` | Features, expert formula, explanations, grades, training | 33 | 32 | 0 | 1 |
 | Notifications + hygiene | `tests/test_notify_push.py` | Notifications, web push, launcher helpers, no secrets in code | 19 | 19 | 0 | 0 |
-| Scanner | `tests/test_scanner.py` | Discovery, port scan per mode, failed/timed-out scans, default passwords, TLS | 35 | 35 | 0 | 0 |
-| Tickets + approval | `tests/test_soar_flow.py` | Tickets, SLA, admin + 2FA gates, worker, verify, rollback | 35 | 35 | 0 | 0 |
+| Scanner | `tests/test_scanner.py` | Discovery, port scan per mode, failed/timed-out scans, default passwords, TLS | 38 | 38 | 0 | 0 |
+| Tickets + approval | `tests/test_soar_flow.py` | Tickets, SLA, admin + 2FA gates, worker, verify, rollback | 37 | 37 | 0 | 0 |
 | Fix plans | `tests/test_soar_plan.py` | Suggested fixes, Linux + Windows commands, safety refusals, dry-run, kill switch | 55 | 55 | 0 | 0 |
 | Real SSH | `tests/test_ssh_live.py` | Engine SSH code against a real loopback SSH server: fixes, verify, enroll | 27 | 27 | 0 | 0 |
 | Upload + detection | `tests/test_uplink.py` | Encrypted bundles, rogue devices, change detection, re-scan verification, risk trend | 25 | 25 | 0 | 0 |
-| **Total** | | | **421** | **420** | **0** | **1** |
+| **Total** | | | **436** | **435** | **0** | **1** |
 
 ## Test cases
 
@@ -231,6 +236,9 @@ So the tests prove the logic and the protocols. They do not prove the live lab
 - [pass] watchlist hit is marked
 - [pass] match host prefers cpe and sorts kev first
 - [pass] match host reads cloud watchlist
+- [pass] service identity (8 cases)
+- [pass] os cpe does not turn a service into the kernel
+- [pass] platform only rows are not stored
 - [pass] match host without database rows is empty
 - [pass] kev sync
 - [pass] epss sync skips comment and header
@@ -303,6 +311,9 @@ So the tests prove the logic and the protocols. They do not prove the live lab
 - [pass] host timeout is a failed scan
 - [pass] timeout of another host does not matter
 - [pass] host timeout setting
+- [pass] application cpe wins over operating system cpe
+- [pass] cpe without raw xml falls back to python nmap
+- [pass] broken xml is harmless
 - [pass] host with really no open ports is ok
 - [pass] cpe given as list
 - [pass] os guess from banners (4 cases)
@@ -330,6 +341,8 @@ So the tests prove the logic and the protocols. They do not prove the live lab
 - [pass] no duplicate tickets on rescan
 - [pass] unconfirmed version does not open a ticket
 - [pass] low risk cve gets no ticket but watchlisted one does
+- [pass] watchlisted unconfirmed cve gets a marked ticket
+- [pass] watchlisted confirmed ticket has no unconfirmed tag
 - [pass] overdue tickets are escalated once
 - [pass] resolved tickets are not escalated
 - [pass] tickets close when rescan shows the fix

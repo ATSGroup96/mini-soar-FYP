@@ -55,28 +55,61 @@ def _host_timeout_seconds() -> int:
         return 300
 
 
-def _timed_out(nm, ip: str) -> bool:
-    """nmap gives up on a slow host (--host-timeout) and still lists it as 'up'
-    with no ports. Its XML marks that host timedout="true"; python-nmap does not
-    expose the flag, so read it from the raw output."""
+def _raw_xml(nm):
+    """nmap's own XML output of the last scan (python-nmap keeps it), or None."""
     try:
         raw = nm.get_nmap_last_output()
     except Exception:
-        return False
+        return None
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", "replace")
-    if not raw or "timedout" not in raw:
-        return False
+    if not raw:
+        return None
     try:
-        root = ElementTree.fromstring(raw)
+        return ElementTree.fromstring(raw)
     except ElementTree.ParseError:
-        return False
+        return None
+
+
+def _host_xml(root, ip: str):
+    """The <host> element of `ip` in nmap's XML, or None."""
+    if root is None:
+        return None
     for host in root.iter("host"):
-        if host.get("timedout") != "true":
-            continue
         if any(a.get("addr") == ip for a in host.iter("address")):
-            return True
-    return False
+            return host
+    return None
+
+
+def _timed_out(host_xml) -> bool:
+    """nmap gives up on a slow host (--host-timeout) and still lists it as 'up'
+    with no ports. Its XML marks that host timedout="true"; python-nmap does not
+    expose the flag, so read it from the raw output."""
+    return host_xml is not None and host_xml.get("timedout") == "true"
+
+
+def _application_cpes(host_xml) -> dict:
+    """
+    {(protocol, port): first application CPE} from nmap's XML.
+
+    nmap often lists two CPEs for one service, e.g. for OpenSSH on Ubuntu:
+        cpe:/a:openbsd:openssh:4.7p1     (the program)
+        cpe:/o:linux:linux_kernel        (the operating system)
+    python-nmap keeps only the LAST one, so the service would be looked up as
+    "linux kernel": wrong CVEs, and the real OpenSSH CVEs never downloaded.
+    """
+    out: dict = {}
+    if host_xml is None:
+        return out
+    for port in host_xml.iter("port"):
+        cpes = [c.text.strip() for c in port.iter("cpe") if c.text]
+        app = next((c for c in cpes if c.startswith(("cpe:/a:", "cpe:2.3:a:"))), None)
+        if app:
+            try:
+                out[(port.get("protocol", "tcp"), int(port.get("portid")))] = app
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 def _os_from_services(services) -> tuple[str, int]:
@@ -129,7 +162,8 @@ def scan_host(ip: str, mac: str | None = None, full_ports: bool = False,
     if ip not in nm.all_hosts():
         log_event("engine", "portscan.no_answer", ip, {})
         return result
-    if _timed_out(nm, ip):
+    host_xml = _host_xml(_raw_xml(nm), ip)
+    if _timed_out(host_xml):
         log_event("engine", "portscan.timeout", ip,
                   {"host_timeout_sec": _host_timeout_seconds()})
         slog.send(f"port scan TIMED OUT: {ip} (result ignored)", slog.WARNING)
@@ -151,6 +185,7 @@ def scan_host(ip: str, mac: str | None = None, full_ports: bool = False,
             result.os_accuracy = 0
 
     # services
+    app_cpes = _application_cpes(host_xml)
     for proto in ("tcp", "udp"):
         if proto not in node:
             continue
@@ -160,6 +195,8 @@ def scan_host(ip: str, mac: str | None = None, full_ports: bool = False,
             cpe = pdata.get("cpe", "")
             if isinstance(cpe, list):
                 cpe = cpe[0] if cpe else ""
+            # the program's CPE, not the operating system's (see _application_cpes)
+            cpe = app_cpes.get((proto, int(port)), cpe)
             result.services.append(ServiceInfo(
                 port=int(port), protocol=proto, state=pdata.get("state", ""),
                 service_name=pdata.get("name", ""),

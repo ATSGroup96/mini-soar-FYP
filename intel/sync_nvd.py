@@ -94,6 +94,11 @@ def _store(conn, vulns) -> int:
         for cfg in cve.get("configurations", []):
             for node in cfg.get("nodes", []):
                 for m in node.get("cpeMatch", []):
+                    # "vulnerable": false marks a platform the flaw only RUNS
+                    # ON (e.g. "Ruby ... on Linux"); storing it would match
+                    # every service on that platform. Keep vulnerable rows only.
+                    if m.get("vulnerable") is False:
+                        continue
                     cpe23 = m.get("criteria", "")
                     vendor, product = _parse_cpe23(cpe23)
                     parts = cpe23.split(":")

@@ -13,6 +13,8 @@ data/
 *.sqlite-journal
 reports/out/
 audit/*.log
+# audit trail = emails, IPs, honeypot usernames/passwords: local only, never in git
+audit/
 logs/
 
 # --- python ---

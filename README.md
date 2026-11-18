@@ -59,7 +59,7 @@ the user you created in Supabase → Authentication → Users.
 .venv\Scripts\python -m pytest                  # or directly (pip install -r requirements-dev.txt first)
 ```
 
-421 automated test cases in `tests/` cover every module and the full flow
+436 automated test cases in `tests/` cover every module and the full flow
 (scan → tickets → approve with 2FA → fix over SSH → verify → re-scan → closed).
 They never read the real `.env`, never contact the real Supabase project and only
 connect to 127.0.0.1. Results: `docs/TEST_RESULTS.md`. Live-lab checks: `docs/LAB_CHECKLIST.md`.
