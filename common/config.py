@@ -55,10 +55,6 @@ class Settings:
     nvd_api_key: str = ""
     nvd_sync_days: int = 30
 
-    # threat intel
-    abuseipdb_api_key: str = ""
-    otx_api_key: str = ""
-
     # soar
     ssh_private_key_path: str = ""
     ssh_username: str = ""
@@ -96,8 +92,6 @@ def get_settings() -> Settings:
         intel_db_path=_get("INTEL_DB_PATH", "./data/intel.sqlite"),
         nvd_api_key=_get("NVD_API_KEY"),
         nvd_sync_days=int(_get("NVD_SYNC_DAYS", "30") or 30),
-        abuseipdb_api_key=_get("ABUSEIPDB_API_KEY"),
-        otx_api_key=_get("OTX_API_KEY"),
         ssh_private_key_path=_get("SSH_PRIVATE_KEY_PATH"),
         ssh_username=_get("SSH_USERNAME"),
         force_dry_run=_get("FORCE_DRY_RUN").lower() == "true",

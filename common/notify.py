@@ -6,7 +6,7 @@ dashboard, live through Supabase Realtime) and, when Web Push is set up, also a
 push message to every subscribed browser (common/webpush.py).
 
 Best-effort on purpose: a notification problem never breaks a scan, a
-remediation or the honeypot.
+or a remediation.
 """
 from __future__ import annotations
 

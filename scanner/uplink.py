@@ -195,13 +195,13 @@ def _sync_host(client, asset_id: str, scan_id: str, h: dict, changes: dict) -> N
     seen_vulns: set[tuple[str, str | None]] = set()
     for v in h.get("vulnerabilities", []):
         sid = svc_id_by_port.get(v.get("port"))
-        key = (v["cve_id"], sid)
+        key = (finding_id(v), sid)
         was = existing.get(key)
         _insert_vuln(client, asset_id, sid, v, was)
         seen_vulns.add(key)
         if _newly_watched(v, was):
             changes["watchlist_hits"] += 1
-            log_event("engine", "watchlist.hit", h["ip"], {"cve": v["cve_id"]})
+            log_event("engine", "watchlist.hit", h["ip"], {"cve": v.get("cve_id")})
             notify(client, "high", "Watchlisted CVE found",
                    f"{v['cve_id']} was found on {h['ip']}"
                    + (f" port {v['port']}" if v.get("port") else "") + ".",
@@ -334,15 +334,26 @@ def _record_change(client, asset_id, scan_id, kind: str, port, detail: dict) -> 
 
 
 # -------------------------------------------------------------- vulnerabilities
+def finding_id(v: dict) -> str:
+    """Identity of a finding: its check id (Nuclei template / NetExec check) or
+    its CVE id. A CVE match from the version matcher uses the CVE id."""
+    return str(v.get("finding_key") or v.get("cve_id") or "")
+
+
 def _known_vulns(client, asset_id: str) -> dict:
-    """{(cve_id, service_id): row} as stored before this scan."""
+    """{(finding id, service_id): row} as stored before this scan."""
     try:
         rows = (client.table("vulnerabilities")
-                .select("id,cve_id,service_id,status,ml_reasons")
+                .select("id,cve_id,finding_key,service_id,status,ml_reasons")
                 .eq("asset_id", asset_id).execute().data)
     except Exception:
-        return {}
-    return {(r["cve_id"], r.get("service_id")): r for r in rows}
+        try:      # database before migration 006 (no finding_key column)
+            rows = (client.table("vulnerabilities")
+                    .select("id,cve_id,service_id,status,ml_reasons")
+                    .eq("asset_id", asset_id).execute().data)
+        except Exception:
+            return {}
+    return {(finding_id(r), r.get("service_id")): r for r in rows}
 
 
 def _newly_watched(v: dict, was: dict | None) -> bool:
@@ -364,7 +375,7 @@ def _insert_vuln(client, asset_id: str, service_id, v: dict, existing: dict | No
         reasons.insert(0, WATCHLIST_REASON)   # the stored row remembers it was alerted
     row = {
         "asset_id": asset_id, "service_id": service_id,
-        "cve_id": v["cve_id"], "cvss_score": v.get("cvss_score"),
+        "cve_id": v.get("cve_id"), "cvss_score": v.get("cvss_score"),
         "cvss_vector": v.get("cvss_vector"), "severity": v.get("severity"),
         "epss_score": v.get("epss_score"),
         "epss_percentile": v.get("epss_percentile"),
@@ -373,6 +384,10 @@ def _insert_vuln(client, asset_id: str, service_id, v: dict, existing: dict | No
         "ml_reasons": reasons,
         "confidence": v.get("confidence", "version-confirmed"),
         "description": (v.get("description") or "")[:2000],
+        # one finding format (migration 006): CVE matches, Nuclei, NetExec
+        "source": v.get("source") or "cve", "finding_key": finding_id(v),
+        "title": v.get("title") or v.get("cve_id"),
+        "evidence": (v.get("evidence") or "")[:1000] or None,
         # status is left alone on re-scan so analyst decisions
         # (accepted / false_positive) survive; new rows default to 'open'
     }
@@ -386,8 +401,12 @@ def _insert_vuln(client, asset_id: str, service_id, v: dict, existing: dict | No
     try:
         write(row)
     except Exception:
-        # DB without the v2 'confidence' column: retry without it
-        row.pop("confidence", None)
+        # database before migration 006 (no source / finding_key / title / evidence)
+        # or before v2 (no confidence): only CVE findings can be stored there
+        for k in ("source", "finding_key", "title", "evidence", "confidence"):
+            row.pop(k, None)
+        if not row.get("cve_id"):
+            return
         try:
             write(row)
         except Exception:
@@ -448,9 +467,10 @@ def _record_risk(client, scan_id, asset_id, score, grade, open_vulns=0, kev_coun
 def _record_network_risk(client, scan_id: str) -> None:
     """Network posture after this scan = average risk of every known asset."""
     try:
-        assets = client.table("assets").select("id,risk_score").execute().data or []
-        vulns = (client.table("vulnerabilities").select("id,in_kev,status")
-                 .eq("status", "open").execute().data or [])
+        from common.db import fetch_all
+        assets = fetch_all(client, "assets", columns="id,risk_score")
+        vulns = fetch_all(client, "vulnerabilities", columns="id,in_kev,status",
+                          eq={"status": "open"})
     except Exception:
         return
     if not assets:

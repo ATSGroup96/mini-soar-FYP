@@ -13,20 +13,23 @@ Automated test suite in `tests/` (pytest). Run it on the project PC with:
 
 | | |
 |---|---|
-| Date | 18 Nov 2026 (v12) |
+| Date | 20 Nov 2026 (v14) |
 | Where | Development sandbox (Linux, Python 3.13) with the project's own paramiko 3.4.0, FastAPI 0.111 and pyotp 2.9; not the project PC |
-| Total test cases | 436 |
-| Passed | 435 |
+| Total test cases | 486 |
+| Passed | 485 |
 | Failed | 0 |
 | Skipped | 1 (ML training: needs PyTorch, which the sandbox does not have) |
 
-**Real-data flow (18 Nov 2026):** the whole pipeline was also run on the project PC's real data
-(Metasploitable 2 scan of 16 Nov + the PC's CVE database with 1,257 CVEs, 1,781 KEV, 406,615 EPSS):
-57 of 57 checks passed (scan, CVE match, ML score, upload, tickets, approve with 2FA, fix, verify,
-rollback, re-scan, change detection, failed-scan safety, watchlist, attack paths, what-if, honeypot,
-push, PDF + MITRE, audit + signature checks).
+**What v14 changed in the tests:**
+- 32 honeypot tests removed (feature removed)
+- the what-if and attack-path tests were rewritten as Fix Impact Preview tests
+- new: 25 Nuclei/NetExec tests (`tests/test_tools.py`)
+- new: tests for the API login and roles, TOTP replay, the automatic network rule, the live
+  topology, paged Supabase reads, one client per thread, and the rogue flag before scoring
 
-**Still to do:** run `.\run.bat test` on the project PC after v12 and note the result here.
+**Still to do:** run `.\run.bat test` on the project PC after v14 and note the result here.
+The real Nuclei / NetExec binaries are never run by the tests (they are switched off in
+`tests/conftest.py`). Their live behaviour is checked with `docs/LAB_CHECKLIST.md` §7.
 
 ## How the tests are kept safe
 
@@ -39,13 +42,15 @@ push, PDF + MITRE, audit + signature checks).
 
 | Part | In the tests |
 |---|---|
-| Engine code (scanner, intel, ml, soar, api, honeypot, reports, common) | the real code |
-| SSH (fixes, verify, enroll, default-password check, honeypot) | real SSH protocol over loopback (paramiko client <-> test server) |
-| HTTP (API, HTTP honeypot, HTTP default-password check) | real HTTP over loopback |
+| Engine code (scanner, intel, ml, soar, api, reports, common) | the real code |
+| SSH (fixes, verify, enroll, default-password check) | real SSH protocol over loopback (paramiko client <-> test server) |
+| HTTP (API, HTTP default-password check) | real HTTP over loopback |
 | TLS check | real TLS handshake with a generated certificate |
 | nmap | stand-in that returns nmap-shaped results (incl. a timed-out host) |
 | Supabase | in-memory stand-in with the same tables, defaults and unique keys |
-| NVD / EPSS / KEV / AbuseIPDB / OTX / web push | stand-ins returning feed-shaped data |
+| NVD / EPSS / KEV / web push | stand-ins returning feed-shaped data |
+| Nuclei / NetExec binaries | `subprocess.run` replaced by output in the tools' documented formats |
+| Dashboard login (Supabase JWT) | token `t-<user id>` accepted by a stand-in check; the real check is unit-tested with PyJWT |
 
 So the tests prove the logic and the protocols. They do not prove the live lab
 (real nmap + Npcap, real Metasploitable, real Supabase): see `docs/LAB_CHECKLIST.md`.
@@ -54,21 +59,21 @@ So the tests prove the logic and the protocols. They do not prove the live lab
 
 | Area | File | What it covers | Cases | Pass | Fail | Skip |
 |---|---|---|---|---|---|---|
-| Analysis + report | `tests/test_analysis.py` | Attack paths, digital twin, MITRE ATT&CK, PDF report | 20 | 20 | 0 | 0 |
-| API gateway | `tests/test_api.py` | Every endpoint over HTTP, 2FA enrolment, audit verify | 24 | 24 | 0 | 0 |
-| Core security | `tests/test_common_core.py` | AES-256-GCM, HMAC signing, audit hash chain, file lock, network modes, syslog | 31 | 31 | 0 | 0 |
+| Report | `tests/test_analysis.py` | MITRE ATT&CK mapping, PDF report | 6 | 6 | 0 | 0 |
+| API gateway | `tests/test_api.py` | Every endpoint over HTTP with login + roles, 2FA enrolment (self only), TOTP replay, audit verify | 24 | 24 | 0 | 0 |
+| Core security | `tests/test_common_core.py` | AES-256-GCM, HMAC signing, audit hash chain, file lock, network modes, syslog, API login check, paged reads, one client per thread | 36 | 36 | 0 | 0 |
 | Safety guard | `tests/test_common_scope.py` | Authorization gate, allowlist, never-touch list, dashboard scope rules | 32 | 32 | 0 | 0 |
-| End to end | `tests/test_engine_e2e.py` | Scan -> tickets -> approve -> fix -> re-scan -> closed; CLI | 12 | 12 | 0 | 0 |
-| Honeypot | `tests/test_honeypot.py` | Fake SSH + HTTP over real connections, alerts, IP reputation | 32 | 32 | 0 | 0 |
+| End to end | `tests/test_engine_e2e.py` | Scan -> tickets -> approve -> fix -> re-scan -> closed; CLI; rogue flag before scoring | 14 | 14 | 0 | 0 |
 | CVE intelligence | `tests/test_intel.py` | NVD/EPSS/KEV sync, version matching, watchlist | 51 | 51 | 0 | 0 |
 | ML risk scoring | `tests/test_ml.py` | Features, expert formula, explanations, grades, training | 33 | 32 | 0 | 1 |
 | Notifications + hygiene | `tests/test_notify_push.py` | Notifications, web push, launcher helpers, no secrets in code | 19 | 19 | 0 | 0 |
+| Patch prioritization | `tests/test_prioritization.py` | Components, dependency rules (incl. automatic network rule), CCS/CVS/CRS, ranking, paper baseline, Fix Impact Preview = ranking numbers, prediction check, API, live topology | 63 | 63 | 0 | 0 |
 | Scanner | `tests/test_scanner.py` | Discovery, port scan per mode, failed/timed-out scans, default passwords, TLS | 38 | 38 | 0 | 0 |
-| Tickets + approval | `tests/test_soar_flow.py` | Tickets, SLA, admin + 2FA gates, worker, verify, rollback | 37 | 37 | 0 | 0 |
+| Tickets + approval | `tests/test_soar_flow.py` | Tickets, SLA, admin + 2FA gates (code used once), worker, verify, rollback | 38 | 38 | 0 | 0 |
 | Fix plans | `tests/test_soar_plan.py` | Suggested fixes, Linux + Windows commands, safety refusals, dry-run, kill switch | 55 | 55 | 0 | 0 |
 | Real SSH | `tests/test_ssh_live.py` | Engine SSH code against a real loopback SSH server: fixes, verify, enroll | 27 | 27 | 0 | 0 |
+| Nuclei + NetExec | `tests/test_tools.py` | Non-intrusive Nuclei command + parsing, NetExec read-only allow-list + parsing, scope, one finding format, ML mapping, tickets, prioritization, re-scan | 25 | 25 | 0 | 0 |
 | Upload + detection | `tests/test_uplink.py` | Encrypted bundles, rogue devices, change detection, re-scan verification, risk trend | 25 | 25 | 0 | 0 |
-| **Total** | | | **436** | **435** | **0** | **1** |
 
 ## Test cases
 
@@ -187,34 +192,6 @@ So the tests prove the logic and the protocols. They do not prove the live lab
 - [pass] cli scan and verify commands
 - [pass] cli discover
 - [pass] cli scan refused without authorization
-
-### Honeypot (`tests/test_honeypot.py`)
-
-- [pass] ssh honeypot records password and never lets in
-- [pass] ssh honeypot refuses every password
-- [pass] ssh honeypot records key login attempt
-- [pass] ssh honeypot shows a real looking banner
-- [pass] ssh honeypot survives garbage
-- [pass] http get serves fake login and records
-- [pass] http post login records credentials and denies
-- [pass] http basic auth is recorded
-- [pass] http never grants access even with right looking login
-- [pass] http other methods are recorded too (4 cases)
-- [pass] http bad content length does not crash
-- [pass] http huge body is capped
-- [pass] http long path is trimmed
-- [pass] event is audited and stored
-- [pass] lab device touching honeypot raises alert
-- [pass] alerts are throttled but every event is stored
-- [pass] clean public ip is stored without alert
-- [pass] event works without cloud
-- [pass] event survives cloud failure
-- [pass] long inputs are trimmed before storage
-- [pass] reputation verdicts (5 cases)
-- [pass] reputation unknown without keys
-- [pass] private addresses are never sent to reputation services
-- [pass] reputation fails soft when feeds are down
-- [pass] reputation is cached
 
 ### CVE intelligence (`tests/test_intel.py`)
 

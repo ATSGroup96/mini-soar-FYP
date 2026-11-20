@@ -94,7 +94,7 @@ if ($Command -eq "update") {
   if ($LASTEXITCODE -ne 0) { Bad "build failed"; exit 1 }
 }
 
-Dc up -d *> $null
+Dc up -d --remove-orphans *> $null
 if ($LASTEXITCODE -eq 0) { Ok "containers started" } else { Bad "docker compose up failed (run: .\start.ps1 logs)"; exit 1 }
 
 $healthy = $false

@@ -210,3 +210,95 @@ def test_syslog_sends_udp_packet(set_env):
 def test_syslog_never_raises_when_siem_is_down(set_env):
     set_env(SYSLOG_PROTO="tcp", SYSLOG_PORT="1")
     syslog_logger.send("nobody listens")           # must not raise
+
+
+# ---- Supabase helpers (v14) ----------------------------------------------------
+def test_fetch_all_reads_every_page(supa):
+    from common.db import fetch_all
+    for i in range(7):
+        supa.add("services", asset_id="a", port=i, state="open")
+    supa.add("services", asset_id="b", port=99, state="open")
+    assert len(fetch_all(supa, "services", page=3)) == 8
+    assert [r["port"] for r in fetch_all(supa, "services", eq={"asset_id": "b"}, page=3)] == [99]
+
+
+def test_each_thread_gets_its_own_client(monkeypatch):
+    """One HTTP/2 connection shared by API threads made Supabase drop it."""
+    import threading
+    from common import db
+    made = []
+    monkeypatch.setenv("SUPABASE_URL", "https://unit-test.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "k")
+    monkeypatch.setattr(db, "create_client", lambda u, k: made.append(object()) or made[-1])
+    from common import config
+    config.get_settings.cache_clear()
+    db.get_service_client.cache_clear()
+    main = db.get_service_client()
+    assert db.get_service_client() is main                       # cached per thread
+    other = []
+    t = threading.Thread(target=lambda: other.append(db.get_service_client()))
+    t.start(); t.join()
+    assert other[0] is not main and len(made) == 2
+    db.get_service_client.cache_clear()
+    assert db.get_service_client() is not main                   # cache_clear works
+
+
+# ---- API login check (common/auth.py) ------------------------------------------
+def test_local_jwt_check():
+    jwt = pytest.importorskip("jwt")
+    import time as _t
+    from common import auth
+    secret = "unit-test-jwt-secret-that-is-long-enough"
+    good = jwt.encode({"sub": "u1", "aud": "authenticated", "exp": int(_t.time()) + 60},
+                      secret, algorithm="HS256")
+    assert auth._verify_local(good, secret) == "u1"
+    for bad in (jwt.encode({"sub": "u1", "aud": "authenticated", "exp": int(_t.time()) - 5},
+                           secret, algorithm="HS256"),                         # expired
+                jwt.encode({"sub": "u1", "aud": "authenticated"}, "other-secret-long-enough-x",
+                           algorithm="HS256"),                                 # forged
+                jwt.encode({"sub": "u1", "aud": "anon"}, secret, algorithm="HS256"),
+                "not-a-token"):
+        with pytest.raises(auth.AuthError) as e:
+            auth._verify_local(bad, secret)
+        assert e.value.status == 401
+
+
+def test_remote_check_asks_supabase(monkeypatch, set_env):
+    import requests
+    from common import auth
+    set_env(SUPABASE_URL="https://unit-test.invalid", SUPABASE_ANON_KEY="anon")
+    seen = {}
+
+    class R:
+        def __init__(self, code, body):
+            self.status_code, self._b = code, body
+
+        def json(self):
+            return self._b
+
+    def fake_get(url, headers, timeout):
+        seen.update(url=url, headers=headers)
+        return R(200, {"id": "u9"}) if headers["Authorization"] == "Bearer good" else R(401, {})
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert auth._verify_remote("good") == "u9"
+    assert seen["url"] == "https://unit-test.invalid/auth/v1/user" and seen["headers"]["apikey"] == "anon"
+    with pytest.raises(auth.AuthError) as e:
+        auth._verify_remote("bad")
+    assert e.value.status == 401
+
+
+def test_require_roles_and_header(supa):
+    from common import auth
+    v = supa.add("profiles", email="v@x", role="viewer")
+    a = supa.add("profiles", email="a@x", role="admin")
+    assert auth.require(supa, f"Bearer t-{v['id']}", "viewer")["id"] == v["id"]
+    assert auth.require(supa, f"Bearer t-{a['id']}", "analyst")["id"] == a["id"]
+    for header, role, status in ((None, "viewer", 401), ("Basic abc", "viewer", 401),
+                                 ("Bearer ", "viewer", 401), (f"Bearer t-{v['id']}", "analyst", 403),
+                                 ("Bearer t-ghost", "viewer", 403), ("Bearer forged", "viewer", 401)):
+        with pytest.raises(auth.AuthError) as e:
+            auth.require(supa, header, role)
+        assert e.value.status == status, (header, role)
+    with pytest.raises(auth.AuthError) as e:
+        auth.require(None, f"Bearer t-{v['id']}")
+    assert e.value.status == 503

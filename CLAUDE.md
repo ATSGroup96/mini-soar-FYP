@@ -2,10 +2,13 @@
 
 Owner: Muhammad Abdullah Jafri (BSCS FYP, Iqra University). Talk to him in Roman Urdu, short and step-by-step.
 Project: **Mini-SOAR — Network Vulnerability Management & Auto-Remediation Platform (CAASM)**. Defensive tool, $0 budget, free tools only.
+The final FYDP proposal is the spec (Scapy + Nmap + Nuclei + NetExec; NO honeypot; NO "digital twin": the method of
+Jiang et al. 2024 is called **Patch Prioritization** + **Fix Impact Preview**). Never reintroduce the old names.
 
 ## Hard rules (never break)
 - Scan / remediate ONLY inside `192.168.103.0/24` (the authorized VirtualBox lab). Never touch any other host or network.
-- NEVER print, cat, echo or log `.env` contents or any key (Supabase service_role, anon, NVD, AbuseIPDB, OTX). Read values only via code that loads them.
+- NEVER print, cat, echo or log `.env` contents or any key (Supabase service_role, anon, JWT secret, NVD). Read values only via code that loads them.
+- Nuclei only in non-intrusive mode (no dos/fuzz/intrusive/OAST), NetExec only read-only (allow-list in scanner/netexec_check.py). Never add modules, -x, dumps or credential guessing.
 - Never ask the user to paste keys/passwords into chat.
 - Do not enable Hyper-V on the Windows host (it breaks VirtualBox).
 - One scan at a time (concurrent scans create duplicate assets).
@@ -23,18 +26,18 @@ Dashboard: http://192.168.103.104:3000 (Supabase login) · API: http://192.168.1
 Supabase project ref: etxvseodwlnobzosmtfs (legacy JWT anon/service_role keys in `.env`).
 
 ## Architecture
-- `docker-compose.yml`: `scanner`, `soar`, `api` share image `mini-soar-engine:latest`, `network_mode: host`, run as root. `scanner` is in profile `tools` (run with `docker compose run --rm scanner ...`). `honeypot` (ports 2222 SSH / 8081 HTTP) and `dashboard` (3000) are on bridge.
-- `scanner/` discovery (ARP/nmap -sn), port_scan (nmap -sS -sV, host-timeout 180s), default_creds, tls_check, engine, uplink (to Supabase).
+- `docker-compose.yml`: `scanner`, `soar`, `api` share image `mini-soar-engine:latest`, `network_mode: host`, run as root. `scanner` is in profile `tools` (run with `docker compose run --rm scanner ...`). `dashboard` (3000) is on bridge. The image includes nuclei + NetExec (/opt/netexec).
+- `scanner/` discovery (ARP/nmap -sn), port_scan (nmap -sS -sV), default_creds, tls_check, nuclei_scan, netexec_check, engine, uplink (to Supabase). One finding format: vulnerabilities.source = cve|nuclei|netexec, finding_key, title, evidence.
 - `intel/` offline SQLite CVE store: KEV, EPSS, NVD. `sync-cpe` = targeted NVD sync per nmap CPE (full NVD sync is unreliable).
-- `ml/` PyTorch risk model (10 features in `ml/features.py`; synthetic training labels from expert formula in `ml/bootstrap_data.py`). Trained: MAE 2.05, RMSE 2.57 on 0–100 scale. Be honest: synthetic data.
-- `soar/` ticketing+SLA, attack_path, digital_twin (what-if), remediation (dry-run → approval → TOTP → SSH fix → rollback → re-scan verify), audit hash-chain.
-- `api/main.py` FastAPI: /health /scan /attack-graph /whatif /remediation/{request,approve,reject} /totp/enroll /audit/verify /report/latest.pdf
+- `ml/` PyTorch risk model (10 features in `ml/features.py`; synthetic training labels from expert formula in `ml/bootstrap_data.py`). Trained: MAE 2.05, RMSE 2.57 on 0–100 scale. Be honest: synthetic data. `ml/finding_map.py` maps Nuclei/NetExec findings (no CVE) to the same features.
+- `soar/` ticketing+SLA, prioritization.py + prioritization_store.py (components, dependency rules, CRS = CCS x CVS, fix ranking, paper baseline, Fix Impact Preview, prediction check), remediation (dry-run → approval → TOTP → SSH fix → rollback → re-scan verify).
+- `api/main.py` FastAPI, every endpoint except /health needs `Authorization: Bearer <Supabase token>` (common/auth.py, roles viewer<analyst<admin): /scan /topology /prioritization /fix-preview /prioritization/{importance,dependency,dependency/remove} /remediation/{request,approve,reject,rollback} /totp/enroll /audit/verify /report/latest.pdf /scope /targets/{ip}/check
 - `dashboard/` Next.js + Supabase AuthGate (RLS needs logged-in user).
-- `honeypot/` fake SSH/HTTP + AbuseIPDB/OTX enrichment. `reports/` PDF + MITRE ATT&CK mapping. `syslog/` SIEM ingest.
+- `reports/` PDF + MITRE ATT&CK mapping. Syslog forwarding: `common/syslog_logger.py`.
 
 ## Useful commands
 ```
-docker compose up -d                       # start api/soar/honeypot/dashboard
+docker compose up -d --remove-orphans      # start api/soar/dashboard
 docker compose ps
 docker compose logs -f api
 docker compose run --rm scanner scan --targets 192.168.103.105
@@ -72,7 +75,7 @@ Host-level tickets (exposed port / clear-text / default cred) auto-resolve on re
 (6 concurrent writers x 40 entries -> chain intact). One scan at a time (data/.scan.lock; API returns 409).
 Dashboard loads up to 1000 vulns and batches realtime reloads (1 s).
 
-## TODO (in this order)
+## TODO from v4 (old; see "TODO (v14)" at the end)
 1. Run supabase/migrations/002_v2_fixes.sql, rebuild (`docker compose build && docker compose up -d`).
 2. `sync-cpe` again (vsftpd now found via vendor alias), then ONE clean scan.
 3. Follow docs/REMEDIATION_SETUP.md (soar user, RSA key, sudoers, .env, TOTP) and run the demo.
@@ -150,3 +153,18 @@ ticket titled "... [unconfirmed] (ip)". D: start-native.ps1 dev mode runs `node 
 (PID = node) + Stop-StrayDashboard (node.exe whose command line contains the dashboard folder). E: audit/ in
 .gitignore; user must `git rm -r --cached audit`. Tests: 436 (435 pass, 1 skip). Real-data flow script lived
 outside the repo (sandbox); 57/57.
+
+## v13 / v14 (2026-11-18 / 2026-11-20): proposal alignment
+v13 added the dependency model (Jiang et al. 2024). v14 renamed it to Patch Prioritization + Fix Impact Preview
+(no "digital twin"), removed the honeypot and attack-path ranking, added Nuclei + NetExec (non-intrusive / read-only),
+one finding format, ML mapping for findings without a CVE, live Topology, API login check (common/auth.py), RLS fixes
+(no self-promotion to admin, no browser writes to remediations), TOTP codes usable once, thread-local Supabase client +
+paged selects (fixed the Topology 500s), rogue flag before scoring. Migration: supabase/migrations/006_proposal_alignment.sql.
+Tests: 485 pass, 1 skip. Method + formulas: docs/PATCH_PRIORITIZATION.md. Not run here: real nuclei/nxc, PowerShell, Next build.
+
+## TODO (v14)
+1. Run migration 006 in Supabase, `run.bat update` (downloads Nuclei + NetExec), sign in again, `run.bat test`.
+2. ONE clean scan of meta; check NetExec (SMBv1 / signing on 445) and Nuclei findings on the Vulnerabilities page.
+3. Remediation demo with the Fix Impact Preview on the approval card; next scan -> prediction checked.
+4. Windows 10 VM target: NetExec RDP/SMB/WinRM checks + the 3 Windows playbooks + rollback.
+5. Panel evidence: test-case sheet + screenshots. `git rm -r --cached audit` (still tracked). Delete the old Supabase project.

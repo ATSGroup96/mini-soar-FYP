@@ -5,6 +5,67 @@ Every change made to the project, newest first, in simple words. Each entry says
 
 ---
 
+## v14 — Aligned with the final FYDP proposal + security fixes (20 Nov 2026)
+
+**In one line:** the project now matches the final proposal. Nuclei and NetExec are added, the
+honeypot is removed, and the "digital twin" is renamed Patch Prioritization + Fix Impact
+Preview. Three security holes are closed and two bugs from the real logs are fixed.
+
+### A. New scan tools (proposal: Scapy + Nmap + **Nuclei** + **NetExec**)
+
+| # | What | Files |
+|---|---|---|
+| 1 | **Nuclei** runs on each host's open services. It looks for misconfigurations, exposed panels and default logins. It is non-intrusive by construction: only safe tags run, dos/fuzz/intrusive/osint/brute-force templates are excluded, there are no out-of-band callbacks (`-ni`), no redirects (`-dr`) and no update check. Targets are built from the host's own IP, and any result for another host is dropped | `scanner/nuclei_scan.py` |
+| 2 | **NetExec** runs read-only checks: SMBv1, SMB signing, null session, anonymous readable/writable shares, RDP without NLA, WinRM over HTTP. Commands come from fixed templates, and an allow-list refuses everything else (`-M`, `-x`, `--sam`, `--lsa`, file transfer, any real login) | `scanner/netexec_check.py` |
+| 3 | **One finding format.** CVE matches, Nuclei and NetExec results go into one table (`source`, `finding_key`, `title`, `evidence`). When Nuclei confirms a CVE the version matcher already found, the existing row becomes "version-confirmed" | `ml/finding_map.py`, `scanner/uplink.py`, migration 006 |
+| 4 | **ML mapping for findings without a CVE.** They get a CVSS-equivalent from their severity (or the template's own CVSS), real EPSS/KEV when they name a CVE, and "confirmed" status. Same 10 features, no retraining | `ml/finding_map.py` |
+| 5 | Tickets for tool findings of severity medium or higher, with a suggested playbook. They appear in Patch Prioritization (port components), the PDF report (findings by tool) and the MITRE mapping (T1557.001, T1135, T1039, T1210 …) | `soar/ticketing.py`, `reports/` |
+| 6 | Install: the Docker image includes both tools. On Windows, `run.bat update` downloads them into `tools\`. `SCAN_NUCLEI` / `SCAN_NETEXEC` in `.env` switch them on or off. Settings → Engine status shows whether they are installed. A missing or crashing tool never stops a scan | `scanner/Dockerfile`, `start-native.ps1`, `.env.example` |
+
+### B. Removed / renamed (proposal changes)
+
+| # | What | Files |
+|---|---|---|
+| 1 | **Honeypot removed**: code, dashboard page, compose services, launchers, AbuseIPDB/OTX settings, tests, and the `honeypot_events` table. `run.bat stop` still stops a honeypot left running by an older version | many |
+| 2 | **"Digital twin" → Patch Prioritization + Fix Impact Preview.** The proposal says "adapts the method of [6] … without building a digital twin". `soar/prioritization.py`, `soar/prioritization_store.py`, the new **Patch Prioritization** page, and API `/prioritization`, `/fix-preview`, `/topology`. In the database: `assets.importance`, `component_dependencies`, `remediations.fix_prediction` / `fix_check` | `soar/`, `api/main.py`, `dashboard/` |
+| 3 | **Fix Impact Preview = the ranking's numbers.** It uses the same functions as the ranking (a test proves the drop is identical). It is shown on the **approval card** before approving, stored again **at approval** (proposal: "when a fix is approved, its predicted effect is stored") and checked by the next scan | `soar/prioritization.py`, `soar/approval.py`, `dashboard/app/remediation` |
+| 4 | Attack-path ranking and the old what-if (`attack_path.py`, `digital_twin.py`) are removed; they are not in the proposal. The **Topology** page now shows hosts → components → dependencies, coloured by risk, and updates **in real time** while a scan runs | `dashboard/app/topology`, `TopologyGraph.tsx` |
+| 5 | Automatic **network** dependency rule: every other host on the subnet depends on a directory server (LDAP/Kerberos, e.g. a domain controller) | `soar/prioritization.py` |
+| 6 | The preview explains when risk goes **up**. CVS is an average (as in [6]), so removing only a mild finding raises it; the ranking never suggests such a fix | `soar/prioritization.py` |
+
+### C. Security fixes (found in the code review)
+
+| # | Hole | Fix |
+|---|---|---|
+| 1 | **Any viewer could make himself admin**: the `profiles` update policy allowed changing `role` | Trigger `protect_profile_columns`: only an admin may change a role; 2FA columns only through the API (migration 006) |
+| 2 | **2FA bypass**: an admin's browser could set a remediation to `approved` + `totp_verified` directly, and the worker ran it with no code | No browser insert/update on `remediations`; only the API (service key) writes them (migration 006) |
+| 3 | **The API had no login check**: it trusted `admin_user_id` in the body, so anyone on the LAN could start scans, reject fixes, change importance, or **enrol 2FA for an admin who had none yet** | Every endpoint except `/health` needs the dashboard login (`Authorization: Bearer`, checked with Supabase or `SUPABASE_JWT_SECRET`). The role comes from the token. Viewer < analyst < admin (`common/auth.py`). The PDF is downloaded with the token |
+| 4 | A TOTP code could be used again within ~90 s | Each code works once (`profiles.totp_last_step`) |
+
+### D. Bugs from the real logs / data
+
+| # | Bug | Fix |
+|---|---|---|
+| 1 | Topology page: **36 × HTTP 500** in `logs/api.log` ("Server disconnected"). One Supabase HTTP/2 connection was shared by API threads, and the twin made 2 queries per host | One client per thread. Loading uses 3 paged queries in total (`common/db.py`) |
+| 2 | The ML input "rogue_asset" was **always 0** during a scan, because the rogue flag was set after scoring | `engine._mark_rogue()` runs before scoring |
+| 3 | Selects without paging stopped at 1000 rows | `common/db.fetch_all()` in ticketing, report, network risk and prioritization |
+
+**Tests:** 485 passed, 1 skipped (PyTorch training). Changes from v13:
+- 32 honeypot tests removed
+- what-if / attack-path tests moved to Fix Impact Preview tests
+- new: `tests/test_tools.py` (25), plus login, role and replay tests in `test_api.py`, and auth/paging tests in `test_common_core.py`
+
+**Not run here:** the real Nuclei / NetExec binaries, the PowerShell launcher, the Next.js
+build, and real Supabase (migration 006 has not been run against a live database).
+
+**To apply:**
+1. Supabase SQL Editor → run `supabase/migrations/006_proposal_alignment.sql`
+2. `.\run.bat stop`, then `.\run.bat update` (downloads Nuclei + NetExec, rebuilds the dashboard, scans)
+3. `.\run.bat test`
+4. Sign out of the dashboard and sign in again (the API now checks the login)
+
+---
+
 ## v13 — Dependency-based digital twin, adapted from Jiang et al. (2024) (18 Nov 2026)
 
 **In one line:** the digital twin is now a model of components (OS + each service) and their

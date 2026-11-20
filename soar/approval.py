@@ -15,14 +15,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
 from common.allowlist import assert_in_scope
 from common.audit import log_event
 from common.db import get_service_client
 from . import remediation, totp_2fa
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def create_request(ticket_id: str, asset_ip: str, action_type: str,
@@ -50,18 +50,18 @@ def create_request(ticket_id: str, asset_ip: str, action_type: str,
         "status": "dry_run", "requested_by": requested_by or None,
     }
     if client:
-        # digital twin: remember what this fix is expected to change, so the
-        # next scan can check the prediction (twin accuracy)
-        from . import twin_store
-        pred = twin_store.prediction_for(client, asset_ip, action_type, params)
+        # Fix Impact Preview: shown on the approval card before anyone approves;
+        # worked out again (and kept) at approval time, then checked by the next scan
+        from . import prioritization_store
+        pred = prioritization_store.prediction_for(client, asset_ip, action_type, params)
         if pred:
-            row["twin_prediction"] = pred
+            row["fix_prediction"] = pred
         try:
             res = client.table("remediations").insert(row).execute()
         except Exception:
-            if "twin_prediction" not in row:
+            if "fix_prediction" not in row:
                 raise
-            row.pop("twin_prediction")          # migration 005 not run yet
+            row.pop("fix_prediction")           # migration 006 not run yet
             res = client.table("remediations").insert(row).execute()
         row["id"] = res.data[0]["id"]
         if ticket_id:
@@ -74,14 +74,29 @@ def create_request(ticket_id: str, asset_ip: str, action_type: str,
 
 def _check_admin_totp(admin_profile: dict, totp_code: str, what: str, ref: str,
                       event: str | None = None) -> None:
+    """Admin role + a fresh TOTP code that has not been used before (a code seen
+    once, e.g. shoulder-surfed or replayed from a request log, is refused)."""
     if admin_profile.get("role") != "admin":
         raise PermissionError(f"Only an admin may {what}.")
     sealed = admin_profile.get("totp_secret")
     if not sealed:
         raise PermissionError(f"Admin has no TOTP enrolled; cannot {what}.")
-    if not totp_2fa.verify(totp_2fa.open_secret(sealed), totp_code):
+    step = totp_2fa.matched_step(totp_2fa.open_secret(sealed), totp_code)
+    if step is None:
         log_event(admin_profile.get("email", "admin"), event or f"remediation.{what}.totp_fail", ref)
         raise PermissionError("Invalid TOTP code.")
+    last = admin_profile.get("totp_last_step")
+    if last is not None and step <= int(last):
+        log_event(admin_profile.get("email", "admin"), "totp.replay_refused", ref)
+        raise PermissionError("This TOTP code was already used. Wait for the next code.")
+    client = get_service_client()
+    if client and admin_profile.get("id"):
+        try:
+            client.table("profiles").update({"totp_last_step": step}).eq(
+                "id", admin_profile["id"]).execute()
+        except Exception:
+            pass                                # migration 006 not run yet: no replay check
+    admin_profile["totp_last_step"] = step
 
 
 def rollback_with_totp(remediation_id: str, admin_profile: dict, totp_code: str) -> dict:
@@ -114,6 +129,20 @@ def rollback_with_totp(remediation_id: str, admin_profile: dict, totp_code: str)
     return {"status": "rolled_back", "output": out}
 
 
+def _fresh_prediction(client, remediation_id: str) -> dict | None:
+    from . import prioritization_store
+    try:
+        row = (client.table("remediations").select("*").eq("id", remediation_id)
+               .execute().data or [None])[0]
+        if not row:
+            return None
+        params = row.get("action_params") or {}
+        return prioritization_store.prediction_for(client, params.get("target_ip"),
+                                                   row["action_type"], params)
+    except Exception:
+        return None
+
+
 def approve_and_arm(remediation_id: str, admin_profile: dict,
                     totp_code: str) -> dict:
     """
@@ -121,17 +150,8 @@ def approve_and_arm(remediation_id: str, admin_profile: dict,
     'approved' and is picked up by the worker. Enforces RBAC + 2FA here as a
     second layer on top of DB RLS.
     """
-    if admin_profile.get("role") != "admin":
-        raise PermissionError("Only an admin may approve a remediation.")
-
-    sealed = admin_profile.get("totp_secret")
-    if not sealed:
-        raise PermissionError("Admin has no TOTP enrolled; cannot approve.")
-    secret = totp_2fa.open_secret(sealed)
-    if not totp_2fa.verify(secret, totp_code):
-        log_event(admin_profile.get("email", "admin"),
-                  "remediation.approve.totp_fail", remediation_id)
-        raise PermissionError("Invalid TOTP code.")
+    _check_admin_totp(admin_profile, totp_code, "approve a remediation", remediation_id,
+                      event="remediation.approve.totp_fail")
 
     client = get_service_client()
     if client:
@@ -143,10 +163,19 @@ def approve_and_arm(remediation_id: str, admin_profile: dict,
             # never re-arm something that already ran, failed or was rejected
             raise PermissionError(
                 f"Only a dry-run remediation can be approved (this one is '{cur[0].get('status')}').")
-        client.table("remediations").update({
-            "status": "approved", "approved_by": admin_profile["id"],
-            "approved_at": _now(), "totp_verified": True,
-        }).eq("id", remediation_id).execute()
+        update = {"status": "approved", "approved_by": admin_profile["id"],
+                  "approved_at": _now(), "totp_verified": True}
+        # the Fix Impact Preview kept with the fix = the one valid when it was approved
+        pred = _fresh_prediction(client, remediation_id)
+        if pred:
+            update["fix_prediction"] = pred
+        try:
+            client.table("remediations").update(update).eq("id", remediation_id).execute()
+        except Exception:
+            if "fix_prediction" not in update:
+                raise
+            update.pop("fix_prediction")        # migration 006 not run yet
+            client.table("remediations").update(update).eq("id", remediation_id).execute()
         if cur[0].get("ticket_id"):
             client.table("tickets").update({"status": "approved"}).eq(
                 "id", cur[0]["ticket_id"]).execute()

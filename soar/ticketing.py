@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-from common.db import get_service_client
+from common.db import fetch_all, get_service_client
 from common.audit import log_event
 from common.notify import notify
 from ml.features import WATCHLIST_REASON
@@ -27,6 +27,8 @@ from .remediation import os_family
 SLA_HOURS = {"critical": 24, "high": 72, "medium": 168, "low": 336, "info": 720}
 # a CVE with an ML risk score at or above this gets a ticket
 PRIORITY_RISK = 70
+# a Nuclei / NetExec finding of this severity gets a ticket (it was observed live)
+TOOL_TICKET_SEVERITIES = ("critical", "high", "medium")
 
 
 def _sla_due(severity: str) -> str:
@@ -60,19 +62,22 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
     if not client:
         return 0
 
-    services = {s["id"]: s for s in client.table("services").select("*").execute().data}
-    asset_rows = client.table("assets").select("id,ip,os_guess").execute().data
+    services = {s["id"]: s for s in fetch_all(client, "services")}
+    asset_rows = fetch_all(client, "assets", columns="id,ip,os_guess")
     asset_os = {a["id"]: os_family(a.get("os_guess")) for a in asset_rows}
     asset_ip = {a["id"]: a.get("ip") for a in asset_rows}
-    vulns = client.table("vulnerabilities").select("*").eq("status", "open").execute().data
+    vulns = fetch_all(client, "vulnerabilities", eq={"status": "open"})
     created = 0
 
-    # ---- CVE tickets ---------------------------------------------------------
+    # ---- finding tickets (CVE matches, Nuclei templates, NetExec checks) ------
     for v in vulns:
         watched = WATCHLIST_REASON in (v.get("ml_reasons") or [])
         unconfirmed = v.get("confidence") == "version-unconfirmed"
+        tool = (v.get("source") or "cve") != "cve"
         priority = (v.get("in_kev") or (v.get("severity") == "critical")
-                    or (v.get("ml_risk_score") or 0) >= PRIORITY_RISK or watched)
+                    or (v.get("ml_risk_score") or 0) >= PRIORITY_RISK or watched
+                    # a problem a tool SAW on the live service (not a version guess)
+                    or (tool and v.get("severity") in TOOL_TICKET_SEVERITIES))
         # an unconfirmed match ("this version MAY be affected") only gets a
         # ticket when the team asked for this CVE on the watchlist
         if not priority or (unconfirmed and not watched):
@@ -84,10 +89,17 @@ def open_tickets_for_scan(host_results: list[dict] | None = None) -> int:
         sev = v.get("severity") or "medium"
         where = f":{svc['port']}" if svc.get("port") else ""
         ip = asset_ip.get(v.get("asset_id"))
-        title = f"{v['cve_id']} on {svc.get('service_name') or 'service'}{where}" + \
+        name = v.get("cve_id") or v.get("title") or v.get("finding_key") or "finding"
+        if tool and v.get("cve_id") and v.get("title"):
+            name = f"{v['title']} ({v['cve_id']})"
+        title = f"{name} on {svc.get('service_name') or 'service'}{where}" + \
                 (" [KEV]" if v.get("in_kev") else "") + \
                 (" [unconfirmed]" if unconfirmed else "") + (f" ({ip})" if ip else "")
         description = (v.get("description") or "")[:500]
+        if tool:
+            description = (f"Found by {v.get('source')} ({v.get('finding_key')}). "
+                           + (f"Evidence: {v.get('evidence')}. " if v.get("evidence") else "")
+                           + description)[:500]
         if unconfirmed:
             description = ("On the CVE watchlist. The installed version could not be confirmed as "
                            "affected: check the version on the host before fixing. " + description)[:500]
@@ -204,8 +216,8 @@ def resolve_fixed() -> int:
     client = get_service_client()
     if not client:
         return 0
-    fixed = {v["id"] for v in client.table("vulnerabilities").select("id")
-             .eq("status", "remediated").execute().data}
+    fixed = {v["id"] for v in fetch_all(client, "vulnerabilities", columns="id",
+                                        eq={"status": "remediated"})}
     if not fixed:
         return 0
     n = 0

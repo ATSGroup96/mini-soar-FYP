@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import { useSession } from "@/components/AuthGate";
 import Topbar from "@/components/Topbar";
 import { api } from "@/lib/api";
 import ConfigNotice from "@/components/ConfigNotice";
@@ -10,17 +9,16 @@ import { GradeBadge, RiskBar, Empty } from "@/lib/ui";
 export default function AssetsPage() {
   const { rows, loading } = useTable<any>("assets", { orderBy: "risk_score" });
   const [ready, setReady] = useState<Record<string, any>>({});
-  const session = useSession();
   const [critMsg, setCritMsg] = useState("");
   const [crit, setCrit] = useState<Record<string, string>>({});
 
-  // digital twin: the admin's importance weight for this asset
-  async function setCriticality(ip: string, level: string) {
+  // patch prioritization: the admin's importance weight for this asset (admin only)
+  async function setImportance(ip: string, level: string) {
     setCritMsg("");
     try {
-      await api.setCriticality(session?.user?.id || "", ip, level);
+      await api.setImportance(ip, level);
       setCrit((c) => ({ ...c, [ip]: level }));
-      setCritMsg(`${ip} is now "${level}". The digital twin uses it on the Topology page.`);
+      setCritMsg(`${ip} is now "${level}". Patch Prioritization uses it to rank fixes.`);
     } catch (e: any) {
       setCritMsg(e.message);
     }
@@ -75,9 +73,9 @@ export default function AssetsPage() {
                       return (
                         <select
                           className="bg-panel2 border border-edge rounded-lg px-2 py-1 text-xs"
-                          value={crit[ip] || a.criticality || "normal"}
-                          onChange={(e) => setCriticality(ip, e.target.value)}
-                          title="Digital-twin weight: critical 1.0, normal 0.8, low 0.5"
+                          value={crit[ip] || a.importance || "normal"}
+                          onChange={(e) => setImportance(ip, e.target.value)}
+                          title="Asset importance for patch prioritization: critical 1.0, normal 0.8, low 0.5"
                         >
                           <option value="critical">critical</option>
                           <option value="normal">normal</option>

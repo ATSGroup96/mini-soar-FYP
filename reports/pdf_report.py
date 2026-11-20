@@ -27,14 +27,16 @@ def _gather() -> dict:
     client = get_service_client()
     if not client:
         return {"assets": [], "vulns": [], "services": [], "tickets": [], "remediations": []}
-    services = client.table("services").select("*").execute().data
+    from common.db import fetch_all
+    services = fetch_all(client, "services")
+    vulns = fetch_all(client, "vulnerabilities", eq={"status": "open"})
+    vulns.sort(key=lambda v: float(v.get("ml_risk_score") or 0), reverse=True)
     return {
-        "assets": client.table("assets").select("*").execute().data,
-        "vulns": client.table("vulnerabilities").select("*").eq("status", "open")
-                 .order("ml_risk_score", desc=True).limit(1000).execute().data,
+        "assets": fetch_all(client, "assets"),
+        "vulns": vulns,
         "services": [s for s in services if (s.get("state") or "open") == "open"],
-        "tickets": client.table("tickets").select("*").execute().data,
-        "remediations": client.table("remediations").select("*").execute().data,
+        "tickets": fetch_all(client, "tickets"),
+        "remediations": fetch_all(client, "remediations"),
     }
 
 
@@ -50,7 +52,9 @@ def _hosts_for_mitre(data: dict) -> list[dict]:
     for v in data["vulns"]:
         h = by_asset.get(v["asset_id"])
         if h:
-            h["vulnerabilities"].append({"in_kev": v.get("in_kev")})
+            h["vulnerabilities"].append({"in_kev": v.get("in_kev"),
+                                         "finding_key": v.get("finding_key"),
+                                         "source": v.get("source")})
     return list(by_asset.values())
 
 
@@ -124,17 +128,26 @@ def build_latest_report() -> str:
 
     # Top findings
     story.append(Paragraph("Prioritized findings (KEV / EPSS / ML)", styles["Heading2"]))
-    rows = [["CVE", "CVSS", "EPSS", "KEV", "ML risk"]]
-    for v in data["vulns"][:20]:
+    by_source: dict = {}
+    for v in data["vulns"]:
+        by_source[v.get("source") or "cve"] = by_source.get(v.get("source") or "cve", 0) + 1
+    tool_name = {"cve": "Nmap + CVE match", "nuclei": "Nuclei", "netexec": "NetExec"}
+    story.append(Paragraph(
+        "Open findings by tool: " + ", ".join(
+            f"{tool_name.get(k, k)} {n}" for k, n in sorted(by_source.items()))
+        if by_source else "No open findings.", styles["Normal"]))
+    rows = [["Finding", "Tool", "CVSS", "EPSS", "KEV", "ML risk"]]
+    for v in data["vulns"][:25]:
+        name = v.get("cve_id") or v.get("title") or v.get("finding_key") or "-"
         rows.append([
-            v["cve_id"], str(v.get("cvss_score") or "-"),
+            str(name)[:40], v.get("source") or "cve", str(v.get("cvss_score") or "-"),
             f"{(v.get('epss_score') or 0)*100:.1f}%",
             "YES" if v.get("in_kev") else "-",
             str(v.get("ml_risk_score") or "-"),
         ])
     if len(rows) == 1:
-        rows.append(["(no findings yet)", "", "", "", ""])
-    ft = Table(rows, colWidths=[45 * mm, 20 * mm, 25 * mm, 20 * mm, 25 * mm])
+        rows.append(["(no findings yet)", "", "", "", "", ""])
+    ft = Table(rows, colWidths=[62 * mm, 18 * mm, 16 * mm, 18 * mm, 14 * mm, 18 * mm])
     ft.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cbd5e1")),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1d4ed8")),

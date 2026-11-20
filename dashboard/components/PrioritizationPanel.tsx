@@ -1,8 +1,9 @@
 "use client";
-// Dependency-based digital twin: component risk (CRS = CCS x CVS), ranked fixes,
-// baseline comparison with the paper's own formula, and the twin's accuracy.
+// Dependency-based patch prioritization: component risk (CRS = CCS x CVS), ranked
+// fixes, comparison with the paper's own CVSS-only formula, and how accurate the
+// Fix Impact Previews of executed fixes were. Adapted from Jiang et al. (2024)
+// without building a digital twin.
 import { useEffect, useState } from "react";
-import { useSession } from "@/components/AuthGate";
 import { api } from "@/lib/api";
 import { Empty } from "@/lib/ui";
 
@@ -18,7 +19,9 @@ function Stat({ label, value, sub }: { label: string; value: any; sub?: string }
   );
 }
 
-function FixList({ rows, showRemoves }: { rows: any[]; showRemoves?: boolean }) {
+function FixList({ rows, showRemoves, onPreview }: {
+  rows: any[]; showRemoves?: boolean; onPreview?: (ip: string, fix: any) => void;
+}) {
   if (!rows?.length) return <Empty msg="Nothing to fix: no finding would lower the risk." />;
   return (
     <table className="w-full text-sm">
@@ -27,6 +30,7 @@ function FixList({ rows, showRemoves }: { rows: any[]; showRemoves?: boolean }) 
           <th className="th">#</th><th className="th">Fix</th><th className="th">Host</th>
           <th className="th">Risk drop</th><th className="th">Host CRS</th>
           {showRemoves && <th className="th">Removes</th>}
+          {onPreview && <th className="th"></th>}
         </tr>
       </thead>
       <tbody>
@@ -51,6 +55,11 @@ function FixList({ rows, showRemoves }: { rows: any[]; showRemoves?: boolean }) 
                 {r.removes?.findings ? <span className="text-muted">{r.removes.findings} findings</span> : null}
               </td>
             )}
+            {onPreview && (
+              <td className="td">
+                <button className="btn text-xs" onClick={() => onPreview(r.ip, r.fix)}>Preview</button>
+              </td>
+            )}
           </tr>
         ))}
       </tbody>
@@ -58,8 +67,9 @@ function FixList({ rows, showRemoves }: { rows: any[]; showRemoves?: boolean }) 
   );
 }
 
-export default function TwinPanel() {
-  const session = useSession();
+export default function PrioritizationPanel({ onPreview, reloadKey = 0 }: {
+  onPreview?: (ip: string, fix: any) => void; reloadKey?: number;
+}) {
   const [t, setT] = useState<any>(null);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
@@ -67,16 +77,15 @@ export default function TwinPanel() {
   const [showBase, setShowBase] = useState(false);
 
   function load() {
-    api.twin().then(setT).catch((e) => setErr(e.message));
+    api.prioritization().then((x) => { setT(x); setErr(""); }).catch((e) => setErr(e.message));
   }
-  useEffect(load, []);
+  useEffect(load, [reloadKey]);
 
   async function addDep(enabled = true, from = dep.from, to = dep.to, rule = dep.rule) {
     setMsg("");
     try {
       await api.setDependency({
-        admin_user_id: session?.user?.id || "", from_component: from.trim(),
-        to_component: to.trim(), rule, enabled, note: dep.note,
+        from_component: from.trim(), to_component: to.trim(), rule, enabled, note: dep.note,
       });
       setMsg(enabled ? "Dependency saved." : "Automatic dependency hidden.");
       setDep({ from: "", to: "", rule: "network", note: "" });
@@ -87,13 +96,13 @@ export default function TwinPanel() {
   async function removeDep(id: string) {
     setMsg("");
     try {
-      await api.removeDependency(session?.user?.id || "", id);
+      await api.removeDependency(id);
       load();
     } catch (e: any) { setMsg(e.message); }
   }
 
-  if (err) return <div className="card border-critical/40 text-critical text-sm">Digital twin: {err}</div>;
-  if (!t) return <div className="card text-sm text-muted">Loading digital twin…</div>;
+  if (err) return <div className="card border-critical/40 text-critical text-sm">Patch prioritization: {err}</div>;
+  if (!t) return <div className="card text-sm text-muted">Loading patch prioritization…</div>;
 
   const acc = t.accuracy || {};
   const cmp = t.comparison || {};
@@ -103,16 +112,17 @@ export default function TwinPanel() {
   return (
     <div className="card space-y-4">
       <div>
-        <div className="text-sm font-semibold">Digital twin — dependency model and patch priority</div>
+        <div className="text-sm font-semibold">Patch prioritization — dependency model and ranked fixes</div>
         <p className="text-xs text-muted mt-1">
-          Component risk CRS = criticality (CCS, from dependencies and asset weight) × vulnerability
-          score (CVS, from our EPSS/KEV-aware finding risk). Adapted from {t.paper}. Fixes are
-          tried on the twin first; nothing here is executed.
+          Component risk CRS = criticality (CCS, from how many components depend on it, weighted by
+          asset importance) × vulnerability score (CVS, from our EPSS/KEV-aware finding risk).
+          Method adapted from {t.paper}. Every fix is tried on a copy of the model in memory;
+          nothing here is executed.
         </p>
         {!t.ready && (
           <div className="mt-2 p-2 rounded-lg bg-high/10 border border-high/30 text-xs">
-            Running with defaults. Run <span className="font-mono">supabase/migrations/005_digital_twin.sql</span> in
-            Supabase to save asset weights, manual dependencies and predictions.
+            Running with defaults. Run <span className="font-mono">{t.migration}</span> in
+            Supabase to save asset importance, manual dependencies and fix previews.
           </div>
         )}
       </div>
@@ -120,7 +130,7 @@ export default function TwinPanel() {
       <div className="grid md:grid-cols-4 gap-3">
         <Stat label="Network risk (avg host CRS)" value={t.improved?.network_avg}
               sub={`total ${t.improved?.network_total}`} />
-        <Stat label="Twin accuracy" value={acc.accuracy_pct != null ? `${acc.accuracy_pct}%` : "–"}
+        <Stat label="Prediction accuracy" value={acc.accuracy_pct != null ? `${acc.accuracy_pct}%` : "–"}
               sub={acc.checked ? `${acc.matched}/${acc.checked} fixes predicted right · mean error ${acc.mean_error}`
                                : "no verified fix checked yet"} />
         <Stat label={`Dangerous fixes in top ${cmp.k ?? 5} (ours)`} value={cmp.ours?.dangerous_in_top_k}
@@ -142,7 +152,7 @@ export default function TwinPanel() {
             <button className="btn text-xs" onClick={load}>Refresh</button>
           </div>
         </div>
-        <FixList rows={showBase ? t.baseline_ranking : t.ranking} showRemoves />
+        <FixList rows={showBase ? t.baseline_ranking : t.ranking} showRemoves onPreview={onPreview} />
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
@@ -152,7 +162,7 @@ export default function TwinPanel() {
             <table className="w-full text-sm">
               <thead className="bg-panel2">
                 <tr>
-                  <th className="th">Component</th><th className="th">Weight</th>
+                  <th className="th">Component</th><th className="th">Importance</th>
                   <th className="th">Depend on it</th><th className="th">CCS</th>
                   <th className="th">CVS</th><th className="th">CRS</th>
                 </tr>
@@ -164,7 +174,7 @@ export default function TwinPanel() {
                       <div>{c.name}</div>
                       <div className="font-mono text-xs text-muted">{c.id}</div>
                     </td>
-                    <td className="td text-xs">{c.criticality}</td>
+                    <td className="td text-xs">{c.importance}</td>
                     <td className="td">{c.dependents}</td>
                     <td className="td">{c.ccs}</td>
                     <td className="td">{c.cvs}</td>
@@ -223,7 +233,7 @@ export default function TwinPanel() {
 
       {t.recent_checks?.length > 0 && (
         <div>
-          <div className="text-sm font-semibold mb-2">Twin checks (prediction vs. real re-scan)</div>
+          <div className="text-sm font-semibold mb-2">Fix Impact Preview checks (prediction vs. real re-scan)</div>
           <ul className="text-xs space-y-1">
             {t.recent_checks.map((c: any) => (
               <li key={c.remediation_id} className="flex justify-between border border-edge rounded-lg p-2">

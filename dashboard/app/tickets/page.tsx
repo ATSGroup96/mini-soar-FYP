@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Topbar from "@/components/Topbar";
 import ConfigNotice from "@/components/ConfigNotice";
-import { useSession } from "@/components/AuthGate";
 import { useTable } from "@/lib/useData";
 import { api } from "@/lib/api";
 import { SeverityBadge, Empty } from "@/lib/ui";
@@ -49,7 +48,6 @@ export default function TicketsPage() {
     assets.rows.forEach((a: any) => (m[a.id] = String(a.ip)));
     return m;
   }, [assets.rows]);
-  const session = useSession();
 
   const [active, setActive] = useState<any>(null);
   const [action, setAction] = useState<string>("block_port");
@@ -83,10 +81,9 @@ export default function TicketsPage() {
     try {
       const r = await api.requestRemediation({
         ticket_id: active.id, asset_ip: ip, action_type: action, params,
-        requested_by: session?.user.id || "",
       });
       setPreview(r.preview || "");
-      setMsg("Dry-run created. An admin can now approve it with 2FA on the Remediation page.");
+      setMsg("Dry-run + Fix Impact Preview created. An admin can now review and approve it with 2FA on the Remediation page.");
     } catch (e: any) {
       setMsg(`Refused: ${e.message}`);
     } finally { setBusy(false); }

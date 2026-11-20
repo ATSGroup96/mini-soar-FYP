@@ -4,18 +4,18 @@ import { usePathname } from "next/navigation";
 import { getSupabase } from "@/lib/supabaseClient";
 import { useSession } from "@/components/AuthGate";
 import {
-  LayoutDashboard, Server, ShieldAlert, Network, Ticket, Wrench,
-  Bug, Lock, ScrollText, FileText, Settings, ShieldCheck, LogOut,
+  LayoutDashboard, Server, ShieldAlert, Network, Ticket, Wrench, ListOrdered,
+  Lock, ScrollText, FileText, Settings, ShieldCheck, LogOut,
 } from "lucide-react";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/assets", label: "Assets", icon: Server },
   { href: "/vulnerabilities", label: "Vulnerabilities", icon: ShieldAlert },
-  { href: "/topology", label: "Topology & Paths", icon: Network },
+  { href: "/topology", label: "Topology", icon: Network },
+  { href: "/prioritization", label: "Patch Prioritization", icon: ListOrdered },
   { href: "/tickets", label: "Tickets", icon: Ticket },
   { href: "/remediation", label: "Remediation", icon: Wrench },
-  { href: "/honeypot", label: "Honeypot", icon: Bug },
   { href: "/tls", label: "TLS Certs", icon: Lock },
   { href: "/audit", label: "Audit Log", icon: ScrollText },
   { href: "/reports", label: "Reports", icon: FileText },

@@ -9,7 +9,6 @@ Windows PC (192.168.103.1)                       VirtualBox host-only lab
  │   ├─ api        :8000  ─┐                       ├─ Metasploitable 2 (.105)
  │   ├─ soar worker       ├── TCP through Windows ─┤  Ubuntu / Kali (optional)
  │   ├─ scanner (on demand)┘                        └─ any new device -> rogue
- │   ├─ honeypot   :2222 / :8081
  │   └─ dashboard  :3000
  └─ Browser: http://localhost:3000
 ```
@@ -23,7 +22,7 @@ Windows PC (192.168.103.1)                       VirtualBox host-only lab
 | OS detection | nmap `-O` | guessed from service banners (e.g. "Linux - Ubuntu") |
 | MAC address of hosts | yes | no (MAC is only visible on layer 2) |
 | Rogue-device detection | by IP + MAC | by IP |
-| CVE match, ML score, tickets, twin, fixes, rollback, TLS, audit | same | same |
+| CVE match, Nuclei, NetExec, ML score, tickets, patch prioritization, fixes, rollback, TLS, audit | same | same |
 
 ## One-time setup
 
@@ -68,7 +67,6 @@ Windows PC (192.168.103.1)                       VirtualBox host-only lab
 * `data` and `audit` are Docker volumes (`minisoar-data`, `minisoar-audit`), not
   folders on F:. On Windows this keeps SQLite and the audit file lock reliable.
   The first `update` re-downloads the CVE data and retrains/loads the model.
-* Honeypot: Windows Firewall may ask to allow Docker on ports 2222/8081 - allow it
   for *Private* networks. With Docker Desktop the source IP shown can be Docker's
   gateway instead of the real VM address.
 * Docker Desktop and VirtualBox share the CPU's virtualization: VMs may be a little

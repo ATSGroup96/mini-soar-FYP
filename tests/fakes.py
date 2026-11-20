@@ -45,6 +45,7 @@ class _Query:
         self._filters: list = []
         self._order: tuple | None = None
         self._limit: int | None = None
+        self._range: tuple | None = None
 
     # ---- operations ---------------------------------------------------------
     def select(self, _cols: str = "*"):
@@ -97,6 +98,10 @@ class _Query:
         self._limit = n
         return self
 
+    def range(self, start: int, end: int):
+        self._range = (start, end)
+        return self
+
     # ---- run ----------------------------------------------------------------
     def _match(self, row) -> bool:
         return all(f(row) for f in self._filters)
@@ -121,6 +126,8 @@ class _Query:
                 out.sort(key=lambda r: (r.get(col) is None, r.get(col) or 0), reverse=desc)
             if self._limit is not None:
                 out = out[: self._limit]
+            if self._range is not None:
+                out = out[self._range[0]: self._range[1] + 1]
             return _Result(copy.deepcopy(out))
 
         if self._op == "insert":

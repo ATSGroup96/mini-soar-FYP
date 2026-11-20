@@ -34,6 +34,9 @@ def admin(supa):
 
 
 def code(profile):
+    # a code can be used only once: forget the last use so one test may
+    # approve and roll back within the same 30 seconds
+    profile["totp_last_step"] = None
     return pyotp.TOTP(profile["_secret"]).now()
 
 
@@ -442,3 +445,15 @@ def test_only_an_executed_fix_can_be_rolled_back(supa, ticket, admin, host_ssh):
         approval.rollback_with_totp(rid, admin, code(admin))
     with pytest.raises(RuntimeError, match="not found"):
         approval.rollback_with_totp("nope", admin, code(admin))
+
+
+def test_the_same_totp_code_is_refused_the_second_time(supa, admin):
+    secret = admin["_secret"]
+    code_now = pyotp.TOTP(secret).now()
+    prof = dict(admin, totp_last_step=None)
+    approval._check_admin_totp(prof, code_now, "approve", "r1")
+    assert prof["totp_last_step"] is not None
+    stored = next(r for r in supa.rows("profiles") if r["id"] == admin["id"])
+    assert stored["totp_last_step"] == prof["totp_last_step"]
+    with pytest.raises(PermissionError, match="already used"):
+        approval._check_admin_totp(prof, code_now, "approve", "r2")

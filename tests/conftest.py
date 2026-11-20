@@ -45,8 +45,6 @@ TEST_ENV = {
     "INTEL_DB_PATH": "./data/intel.sqlite",
     "NVD_API_KEY": "",
     "NVD_SYNC_DAYS": "30",
-    "ABUSEIPDB_API_KEY": "",
-    "OTX_API_KEY": "",
     "SSH_PRIVATE_KEY_PATH": "",
     "SSH_USERNAME": "soar",
     "FORCE_DRY_RUN": "false",
@@ -57,6 +55,12 @@ TEST_ENV = {
     "NETWORK_MODE": "host",
     "ENGINE_HOST_IPS": "",
     "NMAP_PATH": "",
+    # the real Nuclei / NetExec are NEVER run by the tests (tests/test_tools.py
+    # switches them on with fake binaries)
+    "SCAN_NUCLEI": "false",
+    "SCAN_NETEXEC": "false",
+    "NUCLEI_PATH": "",
+    "NETEXEC_PATH": "",
     "VAPID_PRIVATE_KEY": "",
     "VAPID_SUBJECT": "",
     "NEXT_PUBLIC_VAPID_PUBLIC_KEY": "",
@@ -69,19 +73,14 @@ LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
 def _clear_caches() -> None:
-    from common import config, db, scope_store
+    from common import auth, config, db, scope_store
+    auth.clear_cache()
     config.get_settings.cache_clear()
     db.get_service_client.cache_clear()
     scope_store._cache.update(t=0.0, v=None)
     try:
         from ml import risk_score
         risk_score._load.cache_clear()
-    except Exception:
-        pass
-    try:
-        from honeypot import events, ip_reputation
-        ip_reputation.lookup.cache_clear()
-        events.reset_alert_throttle()
     except Exception:
         pass
 
@@ -114,6 +113,20 @@ def isolated(tmp_path, monkeypatch):
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
 
+    # --- 4. no real scan tool, even if installed on this PC -------------------
+    from scanner import netexec_check, nuclei_scan
+    monkeypatch.setattr(nuclei_scan, "binary", lambda: None)
+    monkeypatch.setattr(netexec_check, "binary", lambda: None)
+
+    # --- 5. dashboard logins: the token "t-<user id>" belongs to that user ------
+    from common import auth
+
+    def fake_verify(token: str) -> str:
+        if not token.startswith("t-"):
+            raise auth.AuthError(401, "invalid or expired login, sign in again")
+        return token[2:]
+    monkeypatch.setattr(auth, "verify_token", fake_verify)
+
     _clear_caches()
     yield
     _clear_caches()
@@ -129,6 +142,33 @@ def supa(monkeypatch) -> FakeSupabase:
     monkeypatch.setattr(db, "create_client", lambda _url, _key: fake, raising=False)
     _clear_caches()
     return fake
+
+
+def bearer(profile_or_id) -> dict:
+    """Authorization header of a signed-in dashboard user (see fake_verify)."""
+    uid = profile_or_id["id"] if isinstance(profile_or_id, dict) else profile_or_id
+    return {"Authorization": f"Bearer t-{uid}"}
+
+
+def make_user(supa, role: str = "admin", email: str | None = None, totp: bool = True) -> dict:
+    """A profile row (+ TOTP when totp=True). prof["h"] = its login header,
+    prof["code"]() = a valid TOTP code (each call forgets the last used code,
+    so a test may approve and roll back within the same 30 seconds)."""
+    from soar import totp_2fa
+    import pyotp
+    secret = totp_2fa.new_secret()
+    extra = dict(totp_secret=totp_2fa.seal_secret(secret), totp_enrolled=True) if totp else {}
+    prof = supa.add("profiles", email=email or f"{role}@lab.local", role=role, **extra)
+
+    def code():
+        for row in supa.rows("profiles"):
+            if row["id"] == prof["id"]:
+                row["totp_last_step"] = None
+        return pyotp.TOTP(secret).now()
+    prof["code"] = code
+    prof["secret"] = secret
+    prof["h"] = bearer(prof)
+    return prof
 
 
 @pytest.fixture

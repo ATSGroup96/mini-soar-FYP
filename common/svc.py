@@ -4,7 +4,6 @@ in NETWORK_MODE=native on Windows, where there is no Docker to collect logs).
 
     python -m common.svc api      uvicorn api.main:app --host 0.0.0.0 --port 8000
     python -m common.svc soar     soar.worker
-    python -m common.svc honeypot honeypot.run
 
 stdout and stderr both go to the same file (appended, line-buffered), so
 `start.ps1 logs api` shows prints, uvicorn access logs and tracebacks together.

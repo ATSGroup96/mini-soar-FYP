@@ -54,6 +54,42 @@ def _try_ml_score(host_result: dict) -> None:
                   {"error": str(e)[:200]})
 
 
+def _enabled(name: str) -> bool:
+    """SCAN_NUCLEI / SCAN_NETEXEC in .env (default on); 'false' switches a tool off."""
+    import os
+    return (os.environ.get(name, "true") or "true").strip().lower() not in ("false", "0", "no", "off")
+
+
+def _try_tools(ip: str, services) -> list[dict]:
+    """Nuclei template checks + NetExec read-only posture checks for one host.
+    A missing tool or a tool error never stops the scan."""
+    found: list[dict] = []
+    for env, mod in (("SCAN_NUCLEI", "nuclei_scan"), ("SCAN_NETEXEC", "netexec_check")):
+        if not _enabled(env):
+            continue
+        try:
+            module = __import__(f"scanner.{mod}", fromlist=["check_host"])
+            found += module.check_host(ip, services)
+        except Exception as e:
+            log_event("engine", f"{mod}.error", ip, {"error": str(e)[:200]})
+    return found
+
+
+def _mark_rogue(host_result: dict) -> None:
+    """Rogue = not on the authorized asset list. Set BEFORE scoring, because
+    "rogue_asset" is one of the risk model's inputs (uplink sets it again)."""
+    try:
+        from common.db import get_service_client
+        client = get_service_client()
+        if not client:
+            return
+        rows = (client.table("assets").select("is_authorized")
+                .eq("ip", host_result["ip"]).execute().data)
+        host_result["is_rogue"] = not (rows and rows[0].get("is_authorized"))
+    except Exception:
+        pass
+
+
 class ScanBusy(RuntimeError):
     """Another scan is already running (only one at a time)."""
 
@@ -96,6 +132,9 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
         # TLS certificate inspection
         certs = [vars(c) for c in tls_check.check_host(host.ip, hs.services)]
 
+        # Nuclei (misconfig / panels / default logins) + NetExec (SMB / RDP / WinRM)
+        extra = _try_tools(host.ip, hs.services) if hs.scan_ok else []
+
         host_result = {
             "ip": hs.ip, "mac": hs.mac, "hostname": hs.hostname,
             "os_guess": hs.os_guess, "os_accuracy": hs.os_accuracy,
@@ -107,6 +146,11 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
         }
 
         _try_cve_match(host_result)   # Part 3 (optional)
+        if extra:
+            # one finding format: tool findings join the CVE matches
+            from ml.finding_map import merge_into_host
+            host_result["tool_findings"] = merge_into_host(host_result, extra)
+        _mark_rogue(host_result)
         _try_ml_score(host_result)    # Part 4 (optional)
 
         host_results.append(host_result)
@@ -120,6 +164,7 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
             "live_hosts": len(host_results),
             "open_services": sum(len(h["services"]) for h in host_results),
             "default_cred_hits": sum(len(h["default_creds"]) for h in host_results),
+            "tool_findings": sum(h.get("tool_findings", 0) for h in host_results),
             # hosts whose port scan failed or timed out (nothing is closed for them)
             "failed_hosts": sum(1 for h in host_results if not h.get("scan_ok", True)),
             "duration_sec": round(finished - started, 1),
@@ -141,12 +186,13 @@ def _run_scan(targets: list[str] | None, full_ports: bool) -> dict:
     except Exception as e:
         log_event("engine", "ticketing.error", "", {"error": str(e)[:200]})
 
-    # digital twin: check the predictions of fixes verified since the last scan
+    # patch prioritization: compare each verified fix's Fix Impact Preview
+    # with what this scan really found
     try:
-        from soar.twin_store import evaluate_pending
-        scan_meta["summary"]["twin_checked"] = evaluate_pending(host_results)
+        from soar.prioritization_store import evaluate_pending
+        scan_meta["summary"]["fix_checks"] = evaluate_pending(host_results)
     except Exception as e:
-        log_event("engine", "twin.check.error", "", {"error": str(e)[:200]})
+        log_event("engine", "fix_preview.check.error", "", {"error": str(e)[:200]})
 
     # the scan row was written before the ticket step: store the final summary
     if result.get("scan_id"):

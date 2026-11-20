@@ -59,7 +59,7 @@ if [ "${1:-}" = "update" ]; then
   docker compose build || { bad "build failed"; exit 1; }
 fi
 
-docker compose up -d >/dev/null 2>&1 && ok "containers started" || { bad "docker compose up failed"; exit 1; }
+docker compose up -d --remove-orphans >/dev/null 2>&1 && ok "containers started" || { bad "docker compose up failed"; exit 1; }
 
 for i in $(seq 1 20); do
   curl -sf http://localhost:8000/health >/dev/null && break; sleep 1

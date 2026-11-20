@@ -60,6 +60,9 @@ def _cmd_show_scope(_args) -> int:
     console.print(f"  AUTHORIZED_LAB_ONLY : {s.authorized_lab_only} (.env master switch)")
     console.print(f"  NETWORK AUTHORIZED  : {sc['authorized']}  {sc['note']}")
     console.print(f"  ALLOWED_RANGES      : {[str(n) for n in sc['allowed_ranges']]}")
+    from . import netexec_check, nuclei_scan
+    console.print(f"  NUCLEI              : {nuclei_scan.binary() or 'not installed (checks skipped)'}")
+    console.print(f"  NETEXEC             : {netexec_check.binary() or 'not installed (checks skipped)'}")
     console.print(f"  DENY_HOSTS          : {sc['deny_hosts']}")
     console.print(f"  FORCE_DRY_RUN       : {s.force_dry_run}")
     try:
@@ -104,7 +107,8 @@ def _cmd_scan(args) -> int:
             f"  [cyan]{h['ip']}[/cyan] {h.get('os_guess','?')} — "
             f"{len(h['services'])} services, "
             f"{len(h.get('default_creds', []))} default-cred, "
-            f"{len(h.get('vulnerabilities', []))} CVE"
+            f"{sum(1 for v in h.get('vulnerabilities', []) if (v.get('source') or 'cve') == 'cve')} CVE, "
+            f"{h.get('tool_findings', 0)} Nuclei/NetExec"
             + ("  [red](ROGUE)[/red]" if h.get("is_rogue") else "")
             + ("" if h.get("scan_ok", True) else
                "  [yellow](port scan FAILED / timed out - nothing closed)[/yellow]")

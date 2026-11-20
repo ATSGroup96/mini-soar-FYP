@@ -7,13 +7,16 @@ secrets/
 *_id_ed25519
 *_id_rsa
 
+# --- downloaded scan tools (Windows native: Nuclei, NetExec) ---
+tools/
+
 # --- local data ---
 data/
 *.sqlite
 *.sqlite-journal
 reports/out/
 audit/*.log
-# audit trail = emails, IPs, honeypot usernames/passwords: local only, never in git
+# audit trail = emails, IPs and user actions: local only, never in git
 audit/
 logs/
 

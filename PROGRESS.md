@@ -8,8 +8,8 @@ self-consistent checkpoint you can start testing.
 | 1 | Folder structure, `.env.example`, `.gitignore`, `requirements.txt`, Dockerfiles, `docker-compose.yml`, Supabase SQL schema (tables + RLS + indexes), shared `common/` core (config, **allowlist guard**, AES-256-GCM + HMAC crypto, hash-chain audit, Supabase/SQLite access, syslog) | ✅ ready |
 | 2 | Scanner engine: host discovery (ARP+nmap), port/service/OS detection, default-cred hygiene check, TLS checker, shadow-IT/rogue detection, encrypted+signed uplink, CLI | ✅ ready |
 | 3 | Offline intel: NVD / EPSS / CISA KEV sync scripts + CVE matching; ML training script (PyTorch) + synthetic bootstrap + **explainable** scoring | ✅ ready |
-| 4 | SOAR engine (SSH remediation, dry-run, approval, TOTP 2FA, rollback, patch-verify re-scan), attack-path graph, digital-twin what-if + honeypot (fake SSH/HTTP + IP reputation) | ✅ ready |
-| 5 | FastAPI gateway + Next.js dashboard (11 pages: overview, assets, vulns, topology/what-if, tickets, remediation, honeypot, TLS, audit, reports, settings), dark mode, Cytoscape topology, PWA push | ✅ ready |
+| 4 | SOAR engine (SSH remediation, dry-run, approval, TOTP 2FA, rollback, patch-verify re-scan), (v14: attack paths, what-if and honeypot replaced by Patch Prioritization + Fix Impact Preview; Nuclei + NetExec added) | ✅ ready |
+| 5 | FastAPI gateway + Next.js dashboard (11 pages: overview, assets, vulns, topology, patch prioritization, tickets, remediation, TLS, audit, reports, settings), dark mode, Cytoscape topology, PWA push | ✅ ready |
 | 6 | SLA ticketing + escalation, Reporting (PDF + MITRE ATT&CK), `run.bat`/`run.sh`, full README + Metasploitable 2 testing guide, final single zip | ✅ ready |
 
 ## How to sanity-check Part 1 now (optional)

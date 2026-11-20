@@ -41,6 +41,23 @@ def verify(secret: str, code: str, valid_window: int = 1) -> bool:
     return pyotp.TOTP(secret).verify(code.strip(), valid_window=valid_window)
 
 
+def matched_step(secret: str, code: str, valid_window: int = 1, now: float | None = None):
+    """The 30-second time step the code belongs to (None = wrong code). Stored
+    after a successful use, so the same code can never be used twice."""
+    import hmac
+    import time as _time
+    if not (secret and code):
+        return None
+    code = code.strip()
+    totp = pyotp.TOTP(secret)
+    t = int(now if now is not None else _time.time())
+    step = t // totp.interval
+    for s in range(step - valid_window, step + valid_window + 1):
+        if hmac.compare_digest(totp.at(s * totp.interval), code):
+            return s
+    return None
+
+
 # --- secret storage helpers (encrypt-at-rest) --------------------------------
 def seal_secret(secret: str) -> str:
     return encrypt(secret.encode())

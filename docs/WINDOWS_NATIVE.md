@@ -6,13 +6,13 @@ runs the lab targets (Metasploitable, Ubuntu, Windows VM ...).
 Because the Windows PC itself sits on the VirtualBox Host-only network
 (e.g. `192.168.56.1`), Nmap + Npcap can send raw packets there. So the scan is
 **the same as on Kali**: ARP discovery with MAC addresses, SYN scan, nmap OS
-detection, and the honeypot sees the real attacker IP.
+detection.
 
 ```
 Windows PC (192.168.56.1)                        VirtualBox host-only lab
  ├─ api        :8000  (Python)  ─┐                 192.168.56.0/24
  ├─ soar worker       (Python)   ├── Nmap + Npcap ─┤  Metasploitable 2 (.101)
- ├─ honeypot   :2222 / :8081     │   (raw packets) ├─ Ubuntu / Windows VM ...
+ ├─ nuclei / nxc (tools\\)      │   (raw packets) ├─ Ubuntu / Windows VM ...
  ├─ dashboard  :3000  (Node.js) ─┘                 └─ any new device -> rogue
  └─ Browser: http://localhost:3000
 ```
@@ -25,7 +25,6 @@ Windows PC (192.168.56.1)                        VirtualBox host-only lab
 | MAC address / rogue by MAC | yes | no | **yes** |
 | Port scan | SYN `-sS` | connect `-sT` | **SYN `-sS`** |
 | OS detection | nmap `-O` | from banners | **nmap `-O`** |
-| Honeypot source IP | real | may be Docker's | **real** |
 | Docker needed | yes (on Kali) | Docker Desktop | **no** |
 
 ## Install once (all free)
@@ -66,7 +65,7 @@ cd "F:\Softwares for Mini SOAR\mini-soar"
 * The first `update` creates `.venv` and installs the Python packages (about
   1 GB, 5-15 minutes), builds the dashboard (5-10 minutes), syncs CVEs and scans.
 * Windows Firewall may ask about **python.exe** / **node.exe**: allow on
-  **Private** networks (needed so the lab VMs can reach the honeypot).
+  **Private** networks.
 * Open http://localhost:3000 and log in.
 
 ## Daily use
@@ -77,7 +76,7 @@ cd "F:\Softwares for Mini SOAR\mini-soar"
 .\run.bat scan 192.168.56.101      scan one host (comma for several)
 .\run.bat enroll 192.168.56.101 msfadmin
 .\run.bat check 192.168.56.101
-.\run.bat logs soar                live log (api, soar, honeypot, dashboard)
+.\run.bat logs soar                live log (api, soar, dashboard)
 .\run.bat stop
 ```
 

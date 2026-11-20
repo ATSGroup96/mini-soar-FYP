@@ -1,5 +1,5 @@
 # =============================================================================
-# Mini-SOAR — Python dependencies (scanner, intel, ML, SOAR, honeypot)
+# Mini-SOAR — Python dependencies (scanner, intel, ML, SOAR, API, reports)
 # Pinned to known-good versions. All free / open-source.
 # =============================================================================
 
@@ -10,7 +10,7 @@ scapy==2.5.0                # ARP host discovery, packet crafting (lab only)
 # --- Cloud / DB / HTTP ---
 supabase==2.6.0             # Supabase client (PostgREST, Auth, Realtime)
 psycopg2-binary==2.9.9      # direct Postgres (schema loader, sync scripts)
-requests==2.32.3            # NVD / EPSS / KEV / AbuseIPDB / OTX feeds
+requests==2.32.3            # NVD / EPSS / KEV feeds
 httpx==0.27.0
 
 # --- Crypto / auth ---

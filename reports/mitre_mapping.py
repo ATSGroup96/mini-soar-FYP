@@ -24,6 +24,24 @@ _RULES = {
                      ("T1190", "Exploit Public-Facing Application", "Initial Access")],
     "database":     [("T1213", "Data from Information Repositories", "Collection")],
     "rogue":        [("T1200", "Hardware Additions", "Initial Access")],
+    # NetExec / Nuclei findings without a CVE
+    "smb_relay":    [("T1557.001", "LLMNR/NBT-NS Poisoning and SMB Relay", "Credential Access")],
+    "smbv1":        [("T1210", "Exploitation of Remote Services", "Lateral Movement")],
+    "anon_share":   [("T1135", "Network Share Discovery", "Discovery"),
+                     ("T1039", "Data from Network Shared Drive", "Collection")],
+    "rdp_no_nla":   [("T1021.001", "Remote Desktop Protocol", "Lateral Movement"),
+                     ("T1210", "Exploitation of Remote Services", "Lateral Movement")],
+    "panel":        [("T1133", "External Remote Services", "Initial Access")],
+}
+
+# finding_key (prefix) -> rule
+_FINDING_RULES = {
+    "netexec:smb-signing-not-required": "smb_relay",
+    "netexec:smbv1-enabled": "smbv1",
+    "netexec:smb-null-session": "anon_share",
+    "netexec:smb-anonymous-share": "anon_share",
+    "netexec:rdp-nla-disabled": "rdp_no_nla",
+    "netexec:winrm-http": "panel",
 }
 
 _DB_SVC = {"mysql", "postgresql", "ms-sql-s", "oracle", "mongodb", "redis"}
@@ -50,6 +68,12 @@ def map_host(host: dict) -> list[dict]:
     for v in host.get("vulnerabilities", []):
         if v.get("in_kev"):
             add("kev")
+        key = v.get("finding_key") or ""
+        for prefix, rule in _FINDING_RULES.items():
+            if key.startswith(prefix):
+                add(rule)
+        if v.get("source") == "nuclei":
+            add("panel" if "panel" in key else "http")
 
     return list(techniques.values())
 

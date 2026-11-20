@@ -48,15 +48,15 @@ if [[ "${ans:-N}" =~ ^[Yy]$ ]]; then
   "${ENGINE_PY[@]}" -m ml.train
 fi
 
-echo "[up] Starting API, SOAR worker, honeypot and dashboard..."
-docker compose up -d api soar honeypot dashboard
+echo "[up] Starting API, SOAR worker and dashboard..."
+# --remove-orphans also stops containers of services removed in newer versions (honeypot, v14)
+docker compose up -d --remove-orphans api soar dashboard
 
 LABIP=$(ip -4 -o addr show 2>/dev/null | awk '$4 ~ /^192\.168\.56\./ {split($4,a,"/"); print a[1]; exit}')
 LABIP=${LABIP:-<this-VM-IP>}
 echo "======================================================"
 echo "  Dashboard : http://${LABIP}:3000"
 echo "  API       : http://${LABIP}:8000/health"
-echo "  Honeypot  : SSH :2222   HTTP :8081"
 echo "======================================================"
 echo "Scope check : docker compose run --rm scanner show-scope"
 echo "Scan        : docker compose run --rm scanner scan --scope env"

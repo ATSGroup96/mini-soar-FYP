@@ -92,7 +92,8 @@ def _suggest(service, cve, default_cred_user, os):
         return _action("block_port", f"{EXPOSED_ADMIN_PORTS[port]} reachable from the network",
                        port=port, proto="tcp")
     if cve:
+        what = cve.get("cve_id") or cve.get("title") or cve.get("finding_key") or "finding"
         return _action("block_port",
-                       f"{cve.get('cve_id')} on {name or 'service'}:{port} — block until patched",
+                       f"{what} on {name or 'service'}:{port} — block until fixed",
                        port=port, proto="tcp")
     return None

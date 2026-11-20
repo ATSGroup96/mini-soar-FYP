@@ -1,8 +1,8 @@
 # Mini-SOAR — Network Vulnerability Management & Auto-Remediation Platform (CAASM)
 
 A **defensive** security platform for an **authorized VirtualBox lab**. It
-discovers hosts, matches them to CVEs offline, prioritizes with EPSS + CISA KEV,
-scores risk with an explainable ML model, maps attack paths, and safely
+discovers hosts, checks them with Nmap, Nuclei and NetExec, matches CVEs offline, prioritizes with EPSS + CISA KEV,
+scores risk with an explainable ML model, ranks fixes by component dependencies, and safely
 auto-remediates over SSH — behind a strict safety gate (allowlist → dry-run →
 admin approval → TOTP 2FA → rollback → re-scan verify).
 
@@ -59,13 +59,15 @@ the user you created in Supabase → Authentication → Users.
 .venv\Scripts\python -m pytest                  # or directly (pip install -r requirements-dev.txt first)
 ```
 
-436 automated test cases in `tests/` cover every module and the full flow
-(scan → tickets → approve with 2FA → fix over SSH → verify → re-scan → closed).
+485 automated test cases in `tests/` cover every module and the full flow
+(scan → Nuclei/NetExec → tickets → Fix Impact Preview → approve with 2FA → fix over SSH →
+verify → re-scan → prediction checked → closed).
 They never read the real `.env`, never contact the real Supabase project and only
 connect to 127.0.0.1. Results: `docs/TEST_RESULTS.md`. Live-lab checks: `docs/LAB_CHECKLIST.md`.
 
-**After updating to v10:** run `supabase/migrations/004_trend_changes.sql` once in the
-Supabase SQL Editor, then `.\run.bat update`. Details: `docs/CHANGELOG.md`.
+**After updating to v14:** run `supabase/migrations/006_proposal_alignment.sql` once in the
+Supabase SQL Editor, then `.\run.bat update` (downloads Nuclei + NetExec), then sign in to the
+dashboard again. Details: `docs/CHANGELOG.md`.
 
 ## Contents
 1. [Architecture](#architecture)
@@ -89,7 +91,7 @@ Supabase SQL Editor, then `.\run.bat update`. Details: `docs/CHANGELOG.md`.
  Lab (VirtualBox Host-Only 192.168.56.0/24)        On-prem engine (Docker)                 Cloud (Supabase)        Browser
  ┌───────────────────────────────┐   scan    ┌──────────────────────────────┐  AES+HMAC  ┌────────────────┐   realtime  ┌───────────────┐
  │ Metasploitable2  Ubuntu  ...  │◀─────────▶│ scanner · intel · ml · soar  │───────────▶│ Postgres + RLS │◀───────────▶│ Next.js       │
- │ (targets, you authorize)      │  SSH fix  │ FastAPI gateway · honeypot    │            │ Auth (RBAC)    │             │ dashboard     │
+ │ (targets, you authorize)      │  SSH fix  │ nuclei · netexec · FastAPI    │            │ Auth (RBAC)    │             │ dashboard     │
  └───────────────────────────────┘           └──────────────────────────────┘            │ Realtime       │             │ (Vercel)      │
                                                │ syslog → Wazuh/ELK                         └────────────────┘             └───────────────┘
 ```
@@ -98,19 +100,25 @@ Supabase SQL Editor, then `.\run.bat update`. Details: `docs/CHANGELOG.md`.
 
 ---
 
-## Feature checklist (18)
+## Feature checklist (final proposal)
 
-**Core** — 1 Network scanning (discovery, ports, OS/service, shadow-IT, default creds) ·
-2 Offline CVE matching + watchlist · 3 Dashboard + topology + realtime + PWA push ·
-4 Ticketing + SLA + escalation · 5 SSH auto-remediation · 6 Syslog → Wazuh/ELK ·
-7 AES-256-GCM + HMAC-signed uplink.
-**Smart** — 8 Attack-path / lateral-movement graph · 9 EPSS + KEV prioritization ·
-10 Explainable ML risk score · 11 Digital-twin what-if · 12 Grade A–F + risk trend.
-**Monitoring** — 13 Change / rogue-device detection · 14 Honeypot + IP reputation
-(AbuseIPDB/OTX) · 15 TLS/SSL checker.
-**Safe remediation** — 16 Dry-run + approval + rollback + TOTP 2FA ·
-17 Patch verification (re-scan) + hash-chain audit log.
-**Reporting** — 18 PDF report + MITRE ATT&CK mapping.
+**1 Discovery and scanning** — host discovery (Scapy ARP), port / service / OS detection
+(Nmap), template-based misconfiguration, exposed-panel and default-login checks (**Nuclei**,
+non-intrusive), read-only Windows SMB / RDP / WinRM posture checks (**NetExec**), and
+default-credential checks. All findings share one format.
+**2 Vulnerability intelligence** — offline CVE matching (NVD in SQLite) with EPSS + CISA KEV
+prioritization (KEV → EPSS → CVSS), plus a CVE watch-list.
+**3 Risk analysis** — explainable PyTorch risk score (findings without a CVE are mapped to the
+same inputs), and **dependency-based patch prioritization** with a **Fix Impact Preview**
+(method of Jiang et al. 2024, without a digital twin; see `docs/PATCH_PRIORITIZATION.md`).
+**4 Safe auto-remediation** — SSH fixes with dry-run, admin approval, TOTP 2FA (each code works
+once), a stored rollback, a post-fix check on the host, and the next scan checking the
+predicted impact.
+**5 Threat monitoring and security** — rogue-device and change detection, TLS certificate
+checking, and a tamper-evident hash-chained audit log.
+**6 Workflow and reporting** — SLA ticketing with escalation, a dark-mode dashboard with
+real-time topology and PWA push notifications, a PDF report (+ MITRE ATT&CK mapping), and
+syslog forwarding to a SIEM.
 
 ---
 
@@ -122,7 +130,8 @@ Supabase SQL Editor, then `.\run.bat update`. Details: `docs/CHANGELOG.md`.
   offline demo, required for the full dashboard experience
 - ~8 GB RAM (16 GB comfortable), ~20 GB disk
 
-Optional free API keys (improve a couple of features): NVD, AbuseIPDB, AlienVault OTX.
+Optional free API key: NVD (faster CVE sync). Nuclei and NetExec are free/open-source; the
+Docker image includes them and `run.bat update` downloads them on Windows.
 
 ---
 
@@ -205,7 +214,7 @@ docker compose build
 docker compose run --rm api python -m intel.cli init
 docker compose run --rm api python -m intel.cli sync-all   # NVD + EPSS + KEV
 docker compose run --rm api python -m ml.train             # train risk model
-docker compose up -d api soar honeypot dashboard
+docker compose up -d --remove-orphans api soar dashboard
 ```
 - Dashboard → <http://localhost:3000>
 - API health → <http://localhost:8000/health>
@@ -258,12 +267,14 @@ or click **Run scan** (top-right) in the dashboard.
   A critical ticket is due in 24 h; if you fast-forward the clock (or edit
   `sla_due_at`), a re-scan marks it **escalated** and raises an alert.
 
-### 5. Attack path + digital-twin what-if
-- **Topology & Paths**: the graph shows *attacker → 192.168.56.101* (initial
-  access via the KEV/default-cred weakness).
-- In the **what-if** panel, target `192.168.56.101`, choose `patch_cve` with
-  `CVE-2011-2523` → you'll see host risk and the network average drop **before**
-  changing anything.
+### 5. Patch prioritization + Fix Impact Preview
+- **Patch Prioritization** page: the ranked fixes, with the biggest drop in network risk first
+  (component risk CRS = criticality × vulnerability score). Next to it is the paper's own
+  CVSS-only ranking for comparison. Set an asset's **Importance** on the Assets page and watch
+  the ranking change.
+- Press **Preview** on a ranked fix (or type your own, e.g. `block_port 21`). The Fix Impact
+  Preview shows host and network risk before → after, without changing anything.
+- **Topology** page: hosts → OS + services → dependencies, live while a scan runs.
 
 ### 6. Safe remediation (the SOAR flow) — best on the Ubuntu VM
 Demo turning off a risky **telnet** service with the full gate:
@@ -271,19 +282,20 @@ Demo turning off a risky **telnet** service with the full gate:
    Authenticator.
 2. Create a remediation (via API or the ticket) `stop_service { "service": "telnetd" }`
    or `block_port { "port": 23 }` for the target.
-3. **Remediation** page → **Review**: read the exact **dry-run** commands and the
-   stored **rollback** commands. Nothing has run yet.
+3. **Remediation** page → **Review**: read the exact **dry-run** commands, the stored
+   **rollback** commands and the **Fix Impact Preview**. Nothing has run yet.
 4. Set `FORCE_DRY_RUN=false` in `.env`, restart the `soar`/`api` services.
-5. Enter your **admin user id** + a fresh **TOTP code** → **Approve & arm**.
+5. Enter a fresh **TOTP code** → **Approve & arm** (you must be signed in as an admin).
 6. The worker executes over SSH, then **re-scans**: the remediation shows
    **verified ✓** and the ticket flips to **resolved**.
 7. Need to undo? The rollback plan re-enables the service.
 
-### 7. Honeypot
-- From any lab VM, try to SSH to the engine host on **port 2222**
-  (`ssh root@<engine-ip> -p 2222`) and enter anything.
-- **Honeypot** page logs the attempt, the username/password tried, and (if you
-  set AbuseIPDB/OTX keys) a reputation verdict. Access is never granted.
+### 7. Nuclei + NetExec findings
+- **Vulnerabilities** page → filter "Nuclei" / "NetExec". On Metasploitable 2, NetExec reports
+  **SMBv1 enabled** and **SMB signing not required** on Samba (445), and Nuclei reports
+  default logins and exposed panels (e.g. Tomcat on 8180).
+- Each one gets a ticket with a suggested fix, appears as a finding of its port component in
+  Patch Prioritization, and is shown in the PDF report with its tool.
 
 ### 8. Tamper-evident audit + report
 - **Audit Log** page: every action is chained; the banner shows **"Hash chain
@@ -293,7 +305,7 @@ Demo turning off a risky **telnet** service with the full gate:
   grade, and the **MITRE ATT&CK** mapping.
 
 ### 9. SIEM (optional)
-- Point `SYSLOG_HOST`/`PORT` at a Wazuh/ELK instance; scans, honeypot hits and
+- Point `SYSLOG_HOST`/`PORT` at a Wazuh/ELK instance; scans, Nuclei/NetExec alerts and
   remediations are forwarded as syslog events.
 
 ---
@@ -313,10 +325,12 @@ machine; only the UI is public.
 | Gate | Where | Effect |
 |------|-------|--------|
 | Authorization | `common/config.assert_authorized_to_run` | Refuses to run unless `AUTHORIZED_LAB_ONLY=true` + scope set |
+| API login | `common/auth` | Every action needs the dashboard login; role (viewer < analyst < admin) comes from the token |
+| Non-intrusive tools | `scanner/nuclei_scan`, `scanner/netexec_check` | Nuclei without dos/fuzz/intrusive/OAST; NetExec read-only allow-list |
 | Allowlist | `common/allowlist` | Every target filtered; out-of-scope dropped & audited |
 | Dry-run | `soar/remediation.dry_run` | Exact commands shown before anything runs |
 | Approval | `soar/approval` + DB RLS | Only an **admin** can arm a remediation |
-| 2FA | `soar/totp_2fa` | Fresh TOTP required at approval |
+| 2FA | `soar/totp_2fa` | Fresh TOTP required at approval; each code works once |
 | Kill-switch | `FORCE_DRY_RUN` | Forces preview-only, globally |
 | Rollback | stored `rollback_plan` | Every change is undoable |
 | Audit | `common/audit` hash chain | Tamper-evident log of every action |
@@ -328,16 +342,16 @@ machine; only the UI is public.
 ```
 mini-soar/
 ├── run.bat / run.sh            one-command launcher
-├── docker-compose.yml          scanner · soar · api · honeypot · dashboard
+├── docker-compose.yml          scanner · soar · api · dashboard
 ├── .env.example                all configuration (copy to .env)
 ├── supabase/schema.sql         tables + RLS + indexes
-├── common/                     config, allowlist guard, crypto, audit, db, syslog
-├── scanner/                    discovery, port/service, default-creds, tls, uplink, cli
+├── common/                     config, allowlist guard, API login check, crypto, audit, db, syslog
+├── scanner/                    discovery, port/service, nuclei, netexec, default-creds, tls, uplink, cli
 ├── intel/                      NVD/EPSS/KEV sync + CVE matching
-├── ml/                         features, synthetic data, PyTorch model, train, scoring
-├── soar/                       remediation, approval, totp, worker, verify, attack-path,
-│                               digital-twin, ticketing
-├── honeypot/                   fake ssh/http + ip reputation
+├── ml/                         features, synthetic data, PyTorch model, train, scoring,
+│                               mapping of findings without a CVE
+├── soar/                       remediation, approval, totp, worker, verify, ticketing,
+│                               patch prioritization + Fix Impact Preview
 ├── api/                        FastAPI gateway
 ├── reports/                    PDF report + MITRE ATT&CK mapping
 └── dashboard/                  Next.js (App Router) + Tailwind + Cytoscape + PWA

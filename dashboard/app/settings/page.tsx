@@ -38,6 +38,13 @@ function EngineCard() {
             {!(h.intel?.cves && h.intel?.kev && h.intel?.epss) && <span className="text-muted"> (run.bat update downloads them)</span>}
           </li>
           <li>
+            Scan tools:{" "}
+            <span className={h.tools?.nuclei ? ok : warn}>Nuclei {h.tools?.nuclei ? "ready" : "not installed"}</span>
+            {" · "}
+            <span className={h.tools?.netexec ? ok : warn}>NetExec {h.tools?.netexec ? "ready" : "not installed"}</span>
+            {!(h.tools?.nuclei && h.tools?.netexec) && <span className="text-muted"> (run.bat update installs them)</span>}
+          </li>
+          <li>
             Push notifications:{" "}
             {h.push?.configured
               ? <span className={ok}>ready</span>
@@ -52,7 +59,7 @@ function EngineCard() {
   );
 }
 
-function ScopeCard({ userId }: { userId: string }) {
+function ScopeCard() {
   const [cur, setCur] = useState<any>(null);
   const [ranges, setRanges] = useState("");
   const [deny, setDeny] = useState("");
@@ -90,7 +97,7 @@ function ScopeCard({ userId }: { userId: string }) {
     try {
       const split = (t: string) => t.split(",").map((x) => x.trim()).filter(Boolean);
       const r = await api.setScope({
-        admin_user_id: userId, totp_code: code, allowed_ranges: split(ranges),
+        totp_code: code, allowed_ranges: split(ranges),
         deny_hosts: split(deny), authorized, authorization_note: note,
       });
       setMsg(`Saved. Scope: ${r.allowed_ranges.join(", ")} · ${r.authorized ? "authorized" : "NOT authorized (scans blocked)"}`);
@@ -149,7 +156,7 @@ function ScopeCard({ userId }: { userId: string }) {
         <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm w-40 font-mono"
           placeholder="2FA code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
         <button className="btn btn-primary flex-1" onClick={save}
-          disabled={busy || !userId || code.length < 6 || !ranges.trim() || cur?.editable === false}>
+          disabled={busy || code.length < 6 || !ranges.trim() || cur?.editable === false}>
           {busy ? "Saving…" : "Save scope"}
         </button>
       </div>
@@ -160,9 +167,7 @@ function ScopeCard({ userId }: { userId: string }) {
 
 export default function SettingsPage() {
   const profiles = useTable<any>("profiles", { realtime: false });
-  const [userId, setUserId] = useState("");
   const session = useSession();
-  useEffect(() => { if (session) setUserId(session.user.id); }, [session]);
   const [qr, setQr] = useState("");
   const [currentCode, setCurrentCode] = useState("");
   const [totpMsg, setTotpMsg] = useState("");
@@ -171,7 +176,7 @@ export default function SettingsPage() {
   async function enroll() {
     setTotpMsg("");
     try {
-      const r = await api.enrollTotp(userId, currentCode);
+      const r = await api.enrollTotp(currentCode);
       setQr(r.qr);
       setCurrentCode("");
       setTotpMsg("Scan this QR now. Any older entry for Mini-SOAR in your authenticator app no longer works: delete it.");
@@ -199,7 +204,7 @@ export default function SettingsPage() {
 
         <EngineCard />
 
-        <ScopeCard userId={userId} />
+        <ScopeCard />
 
         <div className="card">
           <div className="text-sm font-semibold mb-2">Users &amp; roles (RBAC)</div>
@@ -223,14 +228,15 @@ export default function SettingsPage() {
 
         <div className="card">
           <div className="text-sm font-semibold mb-2 flex items-center gap-2"><QrCode size={16} /> Enroll TOTP 2FA</div>
-          <p className="text-xs text-muted mb-3">Required to approve remediations. Scan the QR in Google Authenticator.</p>
+          <p className="text-xs text-muted mb-3">
+            Required to approve remediations. For your own account only
+            ({session?.user?.email || "signed-in user"}). Scan the QR in Google Authenticator.
+          </p>
           <div className="flex gap-2">
-            <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm flex-1"
-              placeholder="your Supabase user id" value={userId} onChange={(e) => setUserId(e.target.value)} />
             <input className="bg-panel2 border border-edge rounded-lg px-3 py-2 text-sm w-44 font-mono"
               placeholder="current code (replace)" maxLength={6} value={currentCode}
               onChange={(e) => setCurrentCode(e.target.value.replace(/\D/g, ""))} />
-            <button className="btn btn-primary" onClick={enroll} disabled={!userId}>Generate QR</button>
+            <button className="btn btn-primary" onClick={enroll} disabled={!session}>Generate QR</button>
           </div>
           <p className="text-xs text-muted mt-2">
             First time: leave the code empty. To replace an existing 2FA setup, enter a current 6-digit code.

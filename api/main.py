@@ -1,46 +1,65 @@
 """
 FastAPI gateway — the API the dashboard calls for actions.
 
-Read paths (lists of assets, vulns, etc.) go straight from the browser to
+Read paths (lists of assets, findings, etc.) go straight from the browser to
 Supabase (with RLS). This gateway handles the ACTIONS that must run trusted
-server-side Python: trigger scans, build the attack graph, run what-if
-simulations, the remediation approval pipeline (dry-run / approve+TOTP /
-rollback), TOTP enrollment, audit-chain verification, and PDF reports.
+server-side Python: scans, patch prioritization and the Fix Impact Preview,
+the remediation pipeline (dry-run / approve + TOTP / reject / rollback), TOTP
+enrolment, audit-chain verification and PDF reports.
 
 Run (compose does this):
   uvicorn api.main:app --host 0.0.0.0 --port 8000
 
-Auth note (lab): endpoints that change state expect an admin's Supabase user id
-+ a TOTP code where relevant; the gateway re-checks role + 2FA server-side via
-soar.approval, so it never trusts the client alone.
+Authentication: every endpoint except /health needs the dashboard login, sent
+as "Authorization: Bearer <Supabase access token>". The caller's identity and
+role come from that token (common/auth.py), never from the request body.
+  viewer  : read the model, previews, audit check, report
+  analyst : + run scans, request fixes (dry-run), test a target
+  admin   : + approve / reject / roll back (approve, rollback and scope also need TOTP),
+            change asset importance, dependencies and the network scope
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from common import auth, scope_store
+from common.audit import log_event, verify_chain
 from common.config import get_settings
-from common.audit import verify_chain
 from common.db import get_service_client
-from common import scope_store
-from common.audit import log_event
-from soar import approval, digital_twin, attack_path, totp_2fa, twin_store
+from soar import approval, prioritization_store, totp_2fa
 
-app = FastAPI(title="Mini-SOAR Gateway", version="1.0")
+app = FastAPI(title="Mini-SOAR Gateway", version="1.4")
+# bearer tokens (not cookies) carry the login, so a foreign page cannot act for a user
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
+    allow_headers=["Authorization", "Content-Type"], allow_credentials=False,
 )
 
 
-def _profile(user_id: str) -> dict:
+def _who(role: str):
+    """Dependency: the signed-in caller's profile, with at least `role`."""
+    def dep(authorization: str | None = Header(default=None)) -> dict:
+        try:
+            return auth.require(get_service_client(), authorization, role)
+        except auth.AuthError as e:
+            raise HTTPException(e.status, str(e))
+    return dep
+
+
+viewer, analyst, admin = _who("viewer"), _who("analyst"), _who("admin")
+
+
+def _client():
     client = get_service_client()
     if not client:
         raise HTTPException(503, "Supabase not configured")
-    rows = client.table("profiles").select("*").eq("id", user_id).execute().data
-    if not rows:
-        raise HTTPException(404, "profile not found")
-    return rows[0]
+    return client
+
+
+def _actor(prof: dict) -> str:
+    return prof.get("email") or prof.get("id") or "user"
 
 
 def _engine_status() -> dict:
@@ -61,11 +80,17 @@ def _engine_status() -> dict:
         status["push"] = {"configured": webpush.is_configured()}
     except Exception:
         status["push"] = {"configured": False}
+    try:
+        from scanner import nuclei_scan, netexec_check
+        status["tools"] = {"nuclei": nuclei_scan.available(), "netexec": netexec_check.available()}
+    except Exception:
+        status["tools"] = {"nuclei": False, "netexec": False}
     return status
 
 
 @app.get("/health")
 def health():
+    """Public: the launchers use it to see that the API is up."""
     sc = scope_store.effective_scope()
     return {"ok": True, "authorized": sc["authorized"], "scope_source": sc["source"],
             "scope": [str(n) for n in sc["allowed_ranges"]],
@@ -75,25 +100,22 @@ def health():
 
 # ----- target readiness (Assets page "Test" button) ---------------------------
 @app.get("/targets/{ip}/check")
-def target_check(ip: str):
+def target_check(ip: str, prof: dict = Depends(analyst)):
     """Is this host enrolled for auto-fix? Key login + sudo checks, changes nothing."""
     from soar import enroll
-    os_guess = None
-    client = get_service_client()
-    if client:
-        rows = client.table("assets").select("os_guess").eq("ip", ip).execute().data
-        os_guess = rows[0].get("os_guess") if rows else None
+    rows = _client().table("assets").select("os_guess").eq("ip", ip).execute().data
+    os_guess = rows[0].get("os_guess") if rows else None
     try:
         r = enroll.check_target(ip, os_guess)
     except Exception as e:
         raise HTTPException(400, str(e))
-    log_event("dashboard", "target.check", ip, {"ready": r["ready"]})
+    log_event(_actor(prof), "target.check", ip, {"ready": r["ready"]})
     return r
 
 
 # ----- network scope (Settings page) -----------------------------------------
 @app.get("/scope")
-def get_scope():
+def get_scope(prof: dict = Depends(viewer)):
     """Current scope + the networks the engine is connected to (suggestions)."""
     sc = scope_store.effective_scope(force=True)
     ifaces = scope_store.engine_interfaces()
@@ -112,7 +134,6 @@ def get_scope():
 
 
 class ScopeReq(BaseModel):
-    admin_user_id: str
     totp_code: str
     allowed_ranges: list[str]
     deny_hosts: list[str] = []
@@ -121,10 +142,9 @@ class ScopeReq(BaseModel):
 
 
 @app.post("/scope")
-def set_scope(req: ScopeReq):
+def set_scope(req: ScopeReq, prof: dict = Depends(admin)):
     if scope_store.scope_source() != "dashboard":
         raise HTTPException(400, "SCOPE_SOURCE=env in .env: change the scope in .env")
-    prof = _profile(req.admin_user_id)
     try:
         approval._check_admin_totp(prof, req.totp_code, "change the network scope",
                                    "scope_config", event="scope.totp_fail")
@@ -136,7 +156,7 @@ def set_scope(req: ScopeReq):
                                      req.authorization_note, prof["id"])
     except (ValueError, RuntimeError) as e:
         raise HTTPException(400, str(e))
-    log_event(prof.get("email", "admin"), "scope.update", ",".join(req.allowed_ranges),
+    log_event(_actor(prof), "scope.update", ",".join(req.allowed_ranges),
               {"old": [str(n) for n in old["allowed_ranges"]],
                "new": [str(n) for n in new["allowed_ranges"]],
                "deny": new["deny_hosts"], "authorized": new["authorized"],
@@ -152,8 +172,10 @@ class ScanReq(BaseModel):
 
 
 @app.post("/scan")
-def run_scan(req: ScanReq):
+def run_scan(req: ScanReq, prof: dict = Depends(analyst)):
     from scanner import engine
+    log_event(_actor(prof), "scan.request", ",".join(req.targets or []) or "scope",
+              {"full_ports": req.full_ports})
     try:
         result = engine.run_scan(targets=req.targets, full_ports=req.full_ports)
     except engine.ScanBusy as e:
@@ -163,87 +185,62 @@ def run_scan(req: ScanReq):
     return {"meta": result["meta"], "uplink": result["uplink"]}
 
 
-# ----- attack graph + what-if ------------------------------------------------
-def _load_hosts() -> list[dict]:
-    """Reassemble host dicts (assets + open services + open vulns) from Supabase."""
-    return twin_store.load_hosts(get_service_client())
+# ----- topology + patch prioritization + Fix Impact Preview ------------------
+@app.get("/topology")
+def topology(prof: dict = Depends(viewer)):
+    """Hosts, their components (OS + services) and the dependencies between them."""
+    return prioritization_store.topology(_client())
 
 
-@app.get("/attack-graph")
-def attack_graph():
-    hosts = _load_hosts()
-    g = attack_path.build_graph(hosts)
-    return {"graph": g, "paths": attack_path.rank_paths(g)}
+@app.get("/prioritization")
+def prioritization(prof: dict = Depends(viewer)):
+    """Components, dependencies, component risk (ours + the paper's baseline),
+    ranked fixes, and how accurate past Fix Impact Previews were."""
+    return prioritization_store.overview(_client())
 
 
-class WhatIfReq(BaseModel):
+class PreviewReq(BaseModel):
     target_ip: str
-    fix: dict | None = None          # {type: block_port|stop_service|patch_cve, ...}
-    fixes: list[dict] | None = None  # several fixes simulated together
+    fix: dict | None = None          # {type: block_port|stop_service|disable_account|patch_cve, ...}
+    fixes: list[dict] | None = None  # several fixes previewed together
 
 
-@app.post("/whatif")
-def whatif(req: WhatIfReq):
+@app.post("/fix-preview")
+def fix_preview(req: PreviewReq, prof: dict = Depends(viewer)):
     fixes = list(req.fixes or []) + ([req.fix] if req.fix else [])
     if not fixes:
         raise HTTPException(400, "give 'fix' or 'fixes'")
-    hosts = _load_hosts()
-    target = req.target_ip.strip().split("/")[0]
-    host = next((h for h in hosts if str(h["ip"]).split("/")[0] == target), None)
-    if not host:
-        known = ", ".join(sorted(str(h["ip"]).split("/")[0] for h in hosts)) or "none - run a scan first"
-        raise HTTPException(404, f"asset {target} not found. Scanned hosts: {known}")
-    out = {
-        "host": digital_twin.simulate_host(host, fixes),
-        "network": digital_twin.simulate_network(hosts, str(host["ip"]), fixes),
-    }
-    # dependency-based twin (component risk CRS) for the same fixes
     try:
-        out["twin"] = twin_store.whatif(get_service_client(), str(host["ip"]), fixes)
-    except Exception as e:
-        out["twin"] = {"error": str(e)[:200]}
-    return out
+        return prioritization_store.fix_preview(_client(), req.target_ip.strip(),
+                                                fixes if len(fixes) > 1 else fixes[0])
+    except KeyError as e:
+        raise HTTPException(404, str(e).strip("'\""))
 
 
-# ----- dependency-based digital twin (Jiang et al. 2024, adapted) -------------
-def _admin(user_id: str) -> dict:
-    prof = _profile(user_id)
-    if prof.get("role") != "admin":
-        raise HTTPException(403, "Only an admin may change the digital twin.")
-    return prof
+def _need_migration(e: Exception):
+    return HTTPException(409, f"Could not save. Run {prioritization_store.MIGRATION} "
+                              f"in Supabase first. ({str(e)[:120]})")
 
 
-@app.get("/twin")
-def twin():
-    """Components, dependencies, component risk (ours + the paper's baseline),
-    ranked fixes, and how accurate the twin's past predictions were."""
-    return twin_store.overview(get_service_client())
-
-
-class CriticalityReq(BaseModel):
-    admin_user_id: str
+class ImportanceReq(BaseModel):
     asset_ip: str
-    criticality: str            # critical | normal | low
+    importance: str             # critical | normal | low
 
 
-@app.post("/twin/criticality")
-def twin_criticality(req: CriticalityReq):
-    prof = _admin(req.admin_user_id)
+@app.post("/prioritization/importance")
+def set_importance(req: ImportanceReq, prof: dict = Depends(admin)):
     try:
-        return twin_store.set_criticality(get_service_client(), req.asset_ip,
-                                          req.criticality.strip().lower(),
-                                          prof.get("email", "admin"))
+        return prioritization_store.set_importance(_client(), req.asset_ip,
+                                                   req.importance.strip().lower(), _actor(prof))
     except ValueError as e:
         raise HTTPException(400, str(e))
     except LookupError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
-        raise HTTPException(409, "Could not save. Run supabase/migrations/005_digital_twin.sql "
-                                 f"in Supabase first. ({str(e)[:120]})")
+        raise _need_migration(e)
 
 
 class DependencyReq(BaseModel):
-    admin_user_id: str
     from_component: str         # "IP|os" or "IP|port"  (this one depends on ...)
     to_component: str           # ... this one
     rule: str = "network"       # embedding | interaction | data | network
@@ -251,31 +248,27 @@ class DependencyReq(BaseModel):
     note: str = ""
 
 
-@app.post("/twin/dependency")
-def twin_dependency(req: DependencyReq):
-    prof = _admin(req.admin_user_id)
+@app.post("/prioritization/dependency")
+def set_dependency(req: DependencyReq, prof: dict = Depends(admin)):
     try:
-        return twin_store.set_dependency(get_service_client(), req.from_component,
-                                         req.to_component, req.rule.strip().lower(),
-                                         req.enabled, req.note, prof.get("email", "admin"))
+        return prioritization_store.set_dependency(_client(), req.from_component,
+                                                   req.to_component, req.rule.strip().lower(),
+                                                   req.enabled, req.note, _actor(prof))
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        raise HTTPException(409, "Could not save. Run supabase/migrations/005_digital_twin.sql "
-                                 f"in Supabase first. ({str(e)[:120]})")
+        raise _need_migration(e)
 
 
 class DependencyRemoveReq(BaseModel):
-    admin_user_id: str
     id: str
 
 
-@app.post("/twin/dependency/remove")
-def twin_dependency_remove(req: DependencyRemoveReq):
-    prof = _admin(req.admin_user_id)
+@app.post("/prioritization/dependency/remove")
+def remove_dependency(req: DependencyRemoveReq, prof: dict = Depends(admin)):
     try:
-        return {"removed": twin_store.remove_dependency(get_service_client(), req.id,
-                                                        prof.get("email", "admin"))}
+        return {"removed": prioritization_store.remove_dependency(_client(), req.id,
+                                                                  _actor(prof))}
     except Exception as e:
         raise HTTPException(409, str(e)[:200])
 
@@ -286,42 +279,32 @@ class RemReq(BaseModel):
     asset_ip: str
     action_type: str
     params: dict
-    requested_by: str
 
 
 @app.post("/remediation/request")
-def remediation_request(req: RemReq):
+def remediation_request(req: RemReq, prof: dict = Depends(analyst)):
     try:
         return approval.create_request(req.ticket_id, req.asset_ip,
-                                        req.action_type, req.params, req.requested_by)
+                                       req.action_type, req.params, prof["id"])
     except Exception as e:
         raise HTTPException(400, str(e))
 
 
 class ApproveReq(BaseModel):
     remediation_id: str
-    admin_user_id: str
     totp_code: str
 
 
 @app.post("/remediation/approve")
-def remediation_approve(req: ApproveReq):
-    prof = _profile(req.admin_user_id)
+def remediation_approve(req: ApproveReq, prof: dict = Depends(admin)):
     try:
         return approval.approve_and_arm(req.remediation_id, prof, req.totp_code)
     except PermissionError as e:
         raise HTTPException(403, str(e))
 
 
-class RollbackReq(BaseModel):
-    remediation_id: str
-    admin_user_id: str
-    totp_code: str
-
-
 @app.post("/remediation/rollback")
-def remediation_rollback(req: RollbackReq):
-    prof = _profile(req.admin_user_id)
+def remediation_rollback(req: ApproveReq, prof: dict = Depends(admin)):
     try:
         return approval.rollback_with_totp(req.remediation_id, prof, req.totp_code)
     except PermissionError as e:
@@ -332,53 +315,47 @@ def remediation_rollback(req: RollbackReq):
 
 class RejectReq(BaseModel):
     remediation_id: str
-    admin_user_id: str
     reason: str = ""
 
 
 @app.post("/remediation/reject")
-def remediation_reject(req: RejectReq):
-    prof = _profile(req.admin_user_id)
+def remediation_reject(req: RejectReq, prof: dict = Depends(admin)):
     try:
         return approval.reject(req.remediation_id, prof, req.reason)
     except PermissionError as e:
         raise HTTPException(403, str(e))
 
 
-# ----- TOTP enrollment -------------------------------------------------------
+# ----- TOTP enrolment (always for the signed-in user only) -------------------
 class EnrollReq(BaseModel):
-    user_id: str
     current_code: str = ""      # needed only to REPLACE an existing 2FA setup
 
 
 @app.post("/totp/enroll")
-def totp_enroll(req: EnrollReq):
-    prof = _profile(req.user_id)
+def totp_enroll(req: EnrollReq, prof: dict = Depends(viewer)):
     if prof.get("totp_enrolled") and prof.get("totp_secret"):
-        # replacing 2FA needs proof of the current one; otherwise anyone who
-        # can reach the API could take over an admin's second factor
+        # replacing 2FA needs proof of the current one
         try:
             valid = totp_2fa.verify(totp_2fa.open_secret(prof["totp_secret"]), req.current_code)
         except Exception:
             valid = False
         if not valid:
-            log_event(prof.get("email", "user"), "totp.reenroll_refused", req.user_id)
+            log_event(_actor(prof), "totp.reenroll_refused", prof["id"])
             raise HTTPException(
                 403, "2FA is already set up for this user. Enter a current 6-digit code to "
                      "replace it, or reset it on the engine PC: run.bat totp-reset <email>")
     secret = totp_2fa.new_secret()
     uri = totp_2fa.provisioning_uri(secret, prof.get("email", "user"))
-    client = get_service_client()
-    client.table("profiles").update({
+    _client().table("profiles").update({
         "totp_secret": totp_2fa.seal_secret(secret), "totp_enrolled": True,
-    }).eq("id", req.user_id).execute()
-    log_event(prof.get("email", "user"), "totp.enroll", req.user_id)
+    }).eq("id", prof["id"]).execute()
+    log_event(_actor(prof), "totp.enroll", prof["id"])
     return {"qr": totp_2fa.qr_png_base64(uri), "otpauth_uri": uri}
 
 
 # ----- audit + reports -------------------------------------------------------
 @app.get("/audit/verify")
-def audit_verify():
+def audit_verify(prof: dict = Depends(viewer)):
     """Re-check the audit hash chain and the signatures of the stored scan bundles."""
     from scanner.uplink import verify_stored_bundles
     ok, n, msg = verify_chain()
@@ -386,9 +363,10 @@ def audit_verify():
 
 
 @app.get("/report/latest.pdf")
-def report_pdf():
+def report_pdf(prof: dict = Depends(viewer)):
     from fastapi.responses import FileResponse
     from reports.pdf_report import build_latest_report
     path = build_latest_report()
+    log_event(_actor(prof), "report.download", "", {})
     return FileResponse(path, media_type="application/pdf",
                         filename="mini-soar-report.pdf")

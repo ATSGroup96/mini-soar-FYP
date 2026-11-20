@@ -121,7 +121,7 @@ def test_scan_to_fix_to_closed_ticket(lab, supa, monkeypatch):
         act = t["suggested_action"]
         rid = approval.create_request(t["id"], META_IP, act["action_type"], act["params"],
                                       admin["id"])["remediation"]["id"]
-        approval.approve_and_arm(rid, admin, pyotp.TOTP(secret).now())
+        approval.approve_and_arm(rid, dict(admin), pyotp.TOTP(secret).now())
     assert worker.run_once(supa) == 2 and len(ran) == 2
     assert all(x["status"] == "succeeded" and x["verified_fixed"] for x in supa.rows("remediations"))
 
@@ -200,3 +200,27 @@ def test_cli_scan_refused_without_authorization(lab, capsys, set_env):
     set_env(ALLOWED_RANGES="")
     assert cli.main(["scan"]) == 1
     assert "Refused" in capsys.readouterr().out
+
+
+def test_rogue_flag_is_known_before_the_risk_score(supa):
+    """Before v14 the ML input "rogue_asset" was always 0 during a scan, because
+    the rogue flag was only set later, at upload time."""
+    from ml.risk_score import score_host
+    from tests.conftest import make_host
+    unknown = make_host()
+    engine._mark_rogue(unknown)
+    assert unknown["is_rogue"] is True
+    supa.add("assets", ip=unknown["ip"], is_authorized=True)
+    known = make_host()
+    engine._mark_rogue(known)
+    assert known["is_rogue"] is False
+    a, b = score_host(unknown), score_host(known)
+    assert a["vulnerabilities"][0]["ml_risk_score"] > b["vulnerabilities"][0]["ml_risk_score"]
+    assert any("Unauthorized" in r for r in a["vulnerabilities"][0]["ml_reasons"])
+
+
+def test_mark_rogue_offline_does_nothing():
+    from tests.conftest import make_host
+    h = make_host()
+    engine._mark_rogue(h)
+    assert "is_rogue" not in h

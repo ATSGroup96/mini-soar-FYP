@@ -2,10 +2,11 @@
   Mini-SOAR on WINDOWS WITHOUT DOCKER  (.env: NETWORK_MODE=native)
 
   Full scan like on Kali: ARP discovery + MAC address, SYN scan, nmap OS
-  detection, real attacker IPs on the honeypot. Everything runs as normal
+  detection. Everything runs as normal
   Windows processes (Administrator), no Docker Desktop.
 
   Install once (all free):  Python 3.11, Nmap for Windows (with Npcap), Node.js 20 LTS
+  (Nuclei and NetExec are downloaded by ".\run.bat update" into tools\)
   Guide: docs\WINDOWS_NATIVE.md
 
   .\run.bat                        start everything + health check
@@ -13,7 +14,7 @@
   .\run.bat update                 after new code: install packages, rebuild dashboard, sync CVEs, scan
   .\run.bat enroll <ip> [admin]    prepare a lab host for auto-fix (asks its admin password once)
   .\run.bat check  <ip>            test if a host is ready for auto-fix (changes nothing)
-  .\run.bat logs [service]         live log: api (default), soar, honeypot, dashboard
+  .\run.bat logs [service]         live log: api (default), soar, dashboard
   .\run.bat stop                   stop everything
   .\run.bat test                   run the automated test suite (tests\)
   .\run.bat train                  train the ML risk model again
@@ -36,7 +37,9 @@ $LogDir   = Join-Path $Root "logs"
 $PidDir   = Join-Path $Root "data\pids"
 $Dash     = Join-Path $Root "dashboard"
 $DashOut  = Join-Path $Dash ".next\standalone"
-$Services = @("api", "soar", "honeypot", "dashboard")
+$Services = @("api", "soar", "dashboard")
+# removed services: "stop" still ends a copy left running by an older version
+$LegacyServices = @("honeypot")
 
 function Ok($m)   { Write-Host "  [OK] $m" -ForegroundColor Green }
 function Bad($m)  { Write-Host "  [X]  $m" -ForegroundColor Red }
@@ -88,7 +91,7 @@ function Stop-StrayDashboard {
 }
 
 function Stop-All {
-  foreach ($s in $Services) {
+  foreach ($s in ($Services + $LegacyServices)) {
     $procId = Get-SvcPid $s
     if ($procId) {
       # /T = the whole tree (the .venv python.exe starts the real python as a child)
@@ -202,6 +205,64 @@ if (($Command -eq "update") -or -not (Test-Path $Py) -or -not (Test-Path $DepsMa
 }
 $env:PYTHONUNBUFFERED = "1"
 
+# --- scan tools: Nuclei + NetExec (optional; the scan works without them) --------
+$ToolDir = Join-Path $Root "tools"
+function Get-GithubAsset($repo, $pattern, $dest) {
+  # newest release of github.com/<repo>: download the first asset whose name matches
+  try {
+    $rel = Invoke-RestMethod -UseBasicParsing -Headers @{ "User-Agent" = "mini-soar" } `
+             "https://api.github.com/repos/$repo/releases/latest"
+    $asset = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
+    if (-not $asset) { Warn "$repo : no release file matching '$pattern'"; return $false }
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    $file = Join-Path $env:TEMP $asset.name
+    Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -OutFile $file
+    if ($file -match "\.zip$") { Expand-Archive -Path $file -DestinationPath $dest -Force }
+    else { Copy-Item $file $dest -Force }
+    Remove-Item $file -Force -ErrorAction SilentlyContinue
+    return $true
+  } catch { Warn "$repo download failed: $($_.Exception.Message)"; return $false }
+}
+function Find-Tool($envName, $names, $folder) {
+  $envs = Read-DotEnv
+  if ($envs.ContainsKey($envName) -and $envs[$envName] -and (Test-Path $envs[$envName])) { return $envs[$envName] }
+  foreach ($n in $names) {
+    $c = Get-Command $n -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+  }
+  if (Test-Path $folder) {
+    $f = Get-ChildItem -Path $folder -Recurse -File -ErrorAction SilentlyContinue |
+         Where-Object { $names -contains $_.Name } | Select-Object -First 1
+    if ($f) { return $f.FullName }
+  }
+  return $null
+}
+$nucleiExe = Find-Tool "NUCLEI_PATH" @("nuclei.exe") (Join-Path $ToolDir "nuclei")
+if (-not $nucleiExe -and $Command -eq "update") {
+  Write-Host "-- downloading Nuclei (template checks: misconfigurations, exposed panels, default logins)"
+  if (Get-GithubAsset "projectdiscovery/nuclei" "windows_amd64\.zip$" (Join-Path $ToolDir "nuclei")) {
+    $nucleiExe = Find-Tool "NUCLEI_PATH" @("nuclei.exe") (Join-Path $ToolDir "nuclei")
+  }
+}
+if ($nucleiExe) {
+  $env:NUCLEI_PATH = $nucleiExe
+  if ($Command -eq "update") {
+    Write-Host "-- updating Nuclei templates"
+    & $nucleiExe -update-templates -silent -duc *> $null
+  }
+  Ok "Nuclei: $nucleiExe"
+} else { Warn "Nuclei not installed: its checks are skipped (.\run.bat update downloads it)" }
+
+$nxcExe = Find-Tool "NETEXEC_PATH" @("nxc.exe", "netexec.exe") (Join-Path $ToolDir "netexec")
+if (-not $nxcExe -and $Command -eq "update") {
+  Write-Host "-- downloading NetExec (read-only SMB / RDP / WinRM checks)"
+  if (Get-GithubAsset "Pennyw0rth/NetExec" "(?i)windows" (Join-Path $ToolDir "netexec")) {
+    $nxcExe = Find-Tool "NETEXEC_PATH" @("nxc.exe", "netexec.exe") (Join-Path $ToolDir "netexec")
+  }
+}
+if ($nxcExe) { $env:NETEXEC_PATH = $nxcExe; Ok "NetExec: $nxcExe" }
+else { Warn "NetExec not installed: SMB / RDP / WinRM checks are skipped (.\run.bat update downloads it)" }
+
 # --- enroll / check a target -------------------------------------------------
 if ($Command -eq "enroll" -or $Command -eq "check") {
   if (-not $Arg1) { Write-Host "usage: .\run.bat $Command <target-ip> [admin-user]"; exit 1 }
@@ -282,7 +343,6 @@ function Start-PySvc($name, [string[]]$modArgs) {
 
 Start-PySvc "api"      @("uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000")
 Start-PySvc "soar"     @("soar.worker")
-Start-PySvc "honeypot" @("honeypot.run")
 
 if (Get-SvcPid "dashboard") { Ok "dashboard already running" }
 elseif ($DevMode) {
@@ -320,7 +380,7 @@ for ($i = 0; $i -lt 60; $i++) {
 }
 if ($healthy) { Ok "API healthy" } else { Bad "API not answering (.\run.bat logs api)" }
 
-& $Py -m scanner.cli show-scope | Select-Object -First 9
+& $Py -m scanner.cli show-scope | Select-Object -First 11
 
 function Invoke-Scan {
   if ($Arg1) {

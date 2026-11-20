@@ -47,16 +47,6 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  honeypot:
-    build:
-      context: .
-      dockerfile: honeypot/Dockerfile
-    env_file: .env
-    ports:
-      - "2222:2222"   # fake SSH
-      - "8081:8081"   # fake HTTP
-    restart: unless-stopped
-
   dashboard:
     build:
       context: ./dashboard

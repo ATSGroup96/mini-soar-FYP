@@ -1,4 +1,4 @@
-"""Dependency-based digital twin (soar/twin_model.py, soar/twin_store.py, API).
+"""Patch prioritization + Fix Impact Preview (soar/prioritization*.py, API).
 
 Adapted from Jiang et al. (2024): components + dependency rules -> criticality
 (CCS), component vulnerability score (CVS), CRS = CCS x CVS, virtual patching
@@ -9,8 +9,8 @@ import time
 import pytest
 
 from ml.risk_score import score_host
-from soar import twin_model as T
-from soar import twin_store
+from soar import prioritization as T
+from soar import prioritization_store
 from tests.conftest import META_IP, make_host
 
 OTHER_IP = "192.168.56.102"
@@ -43,13 +43,13 @@ def test_components_are_os_plus_each_open_service(host):
     assert by[f"{META_IP}|21"]["findings"][0]["kev"] is True
     assert by[f"{META_IP}|22"]["default_cred"] is True
     assert by[f"{META_IP}|os"]["findings"] == []          # every CVE here has a port
-    assert all(c["criticality"] == "normal" for c in comps)
+    assert all(c["importance"] == "normal" for c in comps)
 
 
 def test_cve_without_port_belongs_to_the_os():
     h = plain_host(services=[(80, "http")], vulns=[vuln("CVE-K", None, 70)])
     os_c = T.build_components(h)[0]
-    assert os_c["kind"] == "os" and [f["cve_id"] for f in os_c["findings"]] == ["CVE-K"]
+    assert os_c["kind"] == "os" and [f["id"] for f in os_c["findings"]] == ["CVE-K"]
 
 
 def test_automatic_rules_embedding_data_interaction():
@@ -114,23 +114,23 @@ def test_baseline_cvs_is_the_papers_equation_3_with_cvss():
 def test_ccs_uses_dependents_floor_and_admin_weight():
     h = plain_host(services=[(80, "http"), (3306, "mysql"), (21, "ftp")],
                    vulns=[vuln("A", 21, 90), vuln("B", 3306, 90)])
-    st = T.twin_state([h])
+    st = T.risk_state([h])
     os_c, db, ftp = comp(st, f"{META_IP}|os"), comp(st, f"{META_IP}|3306"), comp(st, f"{META_IP}|21")
     assert (os_c["dependents"], db["dependents"], ftp["dependents"]) == (3, 1, 0)
     assert os_c["ccs"] == pytest.approx(0.8 * 1.0)                      # most depended-on
     assert db["ccs"] == pytest.approx(0.8 * (0.5 + 0.5 * 1 / 3), abs=1e-3)
     assert ftp["ccs"] == pytest.approx(0.8 * 0.5)                       # floor: never zero
-    crit = T.twin_state([h], {META_IP: "critical"})
-    low = T.twin_state([h], {META_IP: "low"})
+    crit = T.risk_state([h], {META_IP: "critical"})
+    low = T.risk_state([h], {META_IP: "low"})
     assert comp(crit, f"{META_IP}|21")["ccs"] == 0.5 and comp(low, f"{META_IP}|21")["ccs"] == 0.25
-    bogus = T.twin_state([h], {META_IP: "nonsense"})                     # unknown -> normal
+    bogus = T.risk_state([h], {META_IP: "nonsense"})                     # unknown -> normal
     assert comp(bogus, f"{META_IP}|21")["ccs"] == pytest.approx(0.4)
 
 
 def test_crs_is_ccs_times_cvs_and_host_risk_is_its_worst_component():
     h = plain_host(services=[(80, "http"), (3306, "mysql"), (21, "ftp")],
                    vulns=[vuln("A", 21, 90), vuln("B", 3306, 60)])
-    st = T.twin_state([h])
+    st = T.risk_state([h])
     for c in st["components"]:
         assert c["crs"] == pytest.approx(c["ccs"] * c["cvs"], abs=0.02)
     worst = max(c["crs"] for c in st["components"])
@@ -142,7 +142,7 @@ def test_crs_is_ccs_times_cvs_and_host_risk_is_its_worst_component():
 
 def test_baseline_ccs_is_the_raw_dependency_count():
     h = plain_host(services=[(80, "http"), (3306, "mysql")], vulns=[vuln("B", 3306, 60, cvss=9.8)])
-    st = T.twin_state([h], mode="baseline")
+    st = T.risk_state([h], mode="baseline")
     db = comp(st, f"{META_IP}|3306")
     assert db["relations"] == 2 and db["ccs"] == 2.0                    # on OS + used by web
     assert db["crs"] == pytest.approx(2.0 * 4 * 9.8, abs=0.02)
@@ -150,7 +150,7 @@ def test_baseline_ccs_is_the_raw_dependency_count():
 
 
 def test_empty_network():
-    st = T.twin_state([])
+    st = T.risk_state([])
     assert st["components"] == [] and st["network_total"] == 0 and st["network_avg"] == 0.0
     assert T.rank_fixes([]) == []
 
@@ -190,7 +190,7 @@ def test_locking_a_default_account_is_rescored(host):
     assert lock["drop"] > 5
 
 
-def test_criticality_changes_which_host_is_fixed_first():
+def test_importance_changes_which_host_is_fixed_first():
     same = dict(services=[(21, "ftp")], vulns=[vuln("X", 21, 90)])
     a, b = plain_host(META_IP, **same), plain_host(OTHER_IP, **same)
     first = T.rank_fixes([a, b], {META_IP: "low", OTHER_IP: "critical"})[0]
@@ -231,7 +231,7 @@ def test_given_candidate_list_is_used():
 def test_prediction_lists_what_should_change(host):
     score_host(host)
     p = T.predict([host], META_IP, {"type": "block_port", "params": {"port": 21}})
-    assert p["closed_ports"] == [21] and p["removed_cves"] == ["CVE-2011-2523"]
+    assert p["closed_ports"] == [21] and p["removed_findings"] == ["CVE-2011-2523"]
     assert p["cleared_default_creds"] == [] and p["host_crs_after"] < p["host_crs_before"]
     lock = T.predict([host], META_IP, {"type": "disable_account", "params": {"port": 22}})
     assert lock["closed_ports"] == [] and lock["cleared_default_creds"] == [22]
@@ -300,6 +300,91 @@ def test_accuracy_summary():
     assert (a["checked"], a["matched"], a["accuracy_pct"], a["mean_error"]) == (2, 1, 50.0, 7.0)
 
 
+# ---- 4b. Fix Impact Preview (replaces the old what-if) ----------------------------------
+def test_preview_never_changes_the_real_data(host):
+    score_host(host)
+    before = repr(host)
+    T.predict([host], META_IP, {"type": "block_port", "params": {"port": 21}})
+    assert repr(host) == before
+
+
+def test_stop_service_by_name_or_port_number(host):
+    score_host(host)
+    by_name = T.predict([host], META_IP, {"type": "stop_service", "params": {"service": "telnet"}})
+    by_port = T.predict([host], META_IP, {"type": "stop_service", "params": {"service": "23"}})
+    assert by_name["closed_ports"] == by_port["closed_ports"] == [23]
+
+
+def test_lock_account_clears_the_default_password(host):
+    score_host(host)
+    p = T.predict([host], META_IP, {"type": "disable_account", "params": {"username": "msfadmin"}})
+    assert p["cleared_default_creds"] == [22] and p["closed_ports"] == []
+    assert p["counts_after"]["default_creds"] == 0 and p["counts_before"]["default_creds"] == 1
+
+
+def test_several_fixes_together(host):
+    score_host(host)
+    p = T.predict([host], META_IP, [{"type": "block_port", "params": {"port": 21}},
+                                    {"type": "patch_cve", "params": {"cve_id": "cve-2008-0166"}}])
+    assert p["removed_findings"] == ["CVE-2008-0166", "CVE-2011-2523"]
+    assert p["counts_after"]["findings"] == 0 and p["unmatched"] == []
+
+
+def test_fix_that_matches_nothing_is_reported(host):
+    score_host(host)
+    p = T.predict([host], META_IP, {"type": "block_port", "params": {"port": 9999}})
+    assert p["unmatched"] == ["block_port 9999"] and p["drop"] == 0
+    assert "Nothing matched" in p["note"]
+
+
+def test_minor_fix_explains_why_the_host_grade_stays(host):
+    score_host(host)
+    p = T.predict([host], META_IP, {"type": "patch_cve", "params": {"cve_id": "CVE-2008-0166"}})
+    # port 22 keeps its worse problem (a working default password, 65): the
+    # component's average goes UP when only the milder CVE is removed
+    assert p["drop"] < 0 and "Risk goes UP" in p["note"]
+    assert not any(r["fix"]["type"] == "patch_cve" and r["fix"]["params"]["cve_id"] == "CVE-2008-0166"
+                   for r in T.rank_fixes([host]))
+    p = T.predict([host], META_IP, {"type": "patch_cve", "params": {"cve_id": "CVE-2011-2523"}})
+    assert p["drop"] > 0 and p["note"] == ""
+
+
+def test_preview_drop_equals_the_ranked_drop(host):
+    score_host(host)
+    for r in T.rank_fixes([host]):
+        p = T.predict([host], r["ip"], r["fix"])
+        assert p["drop"] == r["drop"]
+        assert (p["host_crs_before"], p["host_crs_after"]) == (r["host_crs_before"], r["host_crs_after"])
+
+
+# ---- 4c. automatic network rule + topology ------------------------------------------------
+def test_directory_server_is_needed_by_the_other_hosts():
+    dc = plain_host("192.168.56.10", services=[(53, "domain"), (88, "kerberos-sec"),
+                                               (389, "ldap")], os_guess="Windows Server")
+    pc = plain_host("192.168.56.20", services=[(3389, "ms-wbt-server")], os_guess="Windows 10")
+    far = plain_host("10.0.0.5", services=[(22, "ssh")])
+    deps = T.auto_dependencies(T.build_components(dc) + T.build_components(pc)
+                               + T.build_components(far))
+    net = [(d["from"], d["to"]) for d in deps if d["rule"] == "network"]
+    assert net == [("192.168.56.20|os", "192.168.56.10|389")]     # other subnet: no edge
+    st = T.risk_state([dc, pc, far])
+    assert comp(st, "192.168.56.10|389")["dependents"] == 1
+
+
+def test_no_directory_server_means_no_network_edges(host):
+    assert not [d for d in T.auto_dependencies(T.build_components(host)) if d["rule"] == "network"]
+
+
+def test_topology_graph(host):
+    score_host(host)
+    g = T.topology(T.risk_state([host]), [host])
+    kinds = {n["type"] for n in g["nodes"]}
+    assert kinds == {"host", "os", "service"}
+    assert all(e["kind"] != "embedding" for e in g["edges"])
+    host_node = next(n for n in g["nodes"] if n["type"] == "host")
+    assert host_node["ip"] == META_IP and host_node["risk"] > 0
+
+
 # ---- 5. data layer + API -----------------------------------------------------------------
 fastapi = pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
@@ -308,7 +393,8 @@ from fastapi.testclient import TestClient   # noqa: E402
 
 from api import main                          # noqa: E402
 from scanner import uplink                    # noqa: E402
-from soar import ticketing, totp_2fa          # noqa: E402
+from soar import ticketing                    # noqa: E402
+from tests.conftest import make_user          # noqa: E402
 from tests.test_engine_e2e import META_NMAP, lab  # noqa: E402,F401  (fixture)
 
 
@@ -327,15 +413,16 @@ def scanned(supa):
 
 @pytest.fixture
 def admin(supa):
-    secret = totp_2fa.new_secret()
-    prof = supa.add("profiles", email="admin@lab.local", role="admin",
-                    totp_secret=totp_2fa.seal_secret(secret), totp_enrolled=True)
-    prof["code"] = lambda: pyotp.TOTP(secret).now()
-    return prof
+    return make_user(supa, "admin")
 
 
-def test_twin_endpoint(api, scanned):
-    r = api.get("/twin")
+@pytest.fixture
+def viewer(supa):
+    return make_user(supa, "viewer", totp=False)
+
+
+def test_prioritization_endpoint(api, scanned, viewer):
+    r = api.get("/prioritization", headers=viewer["h"])
     assert r.status_code == 200
     t = r.json()
     assert t["ready"] is True and "Jiang" in t["paper"]
@@ -349,82 +436,106 @@ def test_twin_endpoint(api, scanned):
     assert t["parameters"]["ccs_floor"] == 0.5
 
 
-def test_twin_endpoint_without_cloud(api):
-    t = api.get("/twin").json()
-    assert t["ready"] is False and t["ranking"] == [] and t["improved"]["components"] == []
+def test_prioritization_needs_a_login(api, scanned):
+    assert api.get("/prioritization").status_code == 401
+    assert api.get("/prioritization", headers={"Authorization": "Bearer forged"}).status_code == 401
 
 
-def test_twin_works_before_migration_005(api, supa, scanned):
-    supa.fail_tables.add("twin_dependencies")          # table does not exist yet
-    t = api.get("/twin").json()
-    assert t["ready"] is False and t["ranking"]        # still ranks with defaults
+def test_prioritization_without_cloud_is_503(api):
+    assert api.get("/prioritization", headers={"Authorization": "Bearer t-x"}).status_code == 503
 
 
-def test_whatif_returns_twin_numbers(api, scanned):
-    r = api.post("/whatif", json={"target_ip": META_IP,
-                                  "fix": {"type": "block_port", "port": 21}}).json()
-    tw = r["twin"]
-    assert tw["closed_ports"] == [21] and tw["host_crs_after"] < tw["host_crs_before"]
-    assert tw["network_total_after"] < tw["network_total_before"]
-    assert "host" in r and "network" in r                # old answer unchanged
+def test_prioritization_works_before_migration_006(api, supa, scanned, viewer):
+    supa.fail_tables.add("component_dependencies")          # table does not exist yet
+    t = api.get("/prioritization", headers=viewer["h"]).json()
+    assert t["ready"] is False and t["ranking"]              # still ranks with defaults
 
 
-def test_set_criticality(api, supa, scanned, admin, audit_actions):
-    body = {"admin_user_id": admin["id"], "asset_ip": META_IP, "criticality": "Critical"}
-    r = api.post("/twin/criticality", json=body)
-    assert r.status_code == 200 and r.json() == {"ip": META_IP, "criticality": "critical"}
-    assert supa.rows("assets")[0]["criticality"] == "critical"
-    assert "twin.criticality" in audit_actions()
-    t = api.get("/twin").json()
-    assert all(c["criticality"] == "critical" for c in t["improved"]["components"])
-    assert api.post("/twin/criticality", json=dict(body, criticality="vip")).status_code == 400
-    assert api.post("/twin/criticality",
+def test_fix_preview_matches_the_ranking(api, scanned, viewer):
+    t = api.get("/prioritization", headers=viewer["h"]).json()
+    top = t["ranking"][0]
+    p = api.post("/fix-preview", headers=viewer["h"],
+                 json={"target_ip": f" {META_IP} ", "fix": top["fix"]}).json()
+    assert p["closed_ports"] == [21] and p["host_crs_after"] < p["host_crs_before"]
+    # the preview of one fix shows the same numbers as the ranked list
+    assert p["drop"] == top["drop"]
+    assert (p["host_crs_before"], p["host_crs_after"]) == (top["host_crs_before"], top["host_crs_after"])
+    assert "snapshot" not in p
+
+
+def test_fix_preview_errors(api, scanned, viewer):
+    assert api.post("/fix-preview", headers=viewer["h"],
+                    json={"target_ip": META_IP}).status_code == 400
+    r = api.post("/fix-preview", headers=viewer["h"],
+                 json={"target_ip": "192.168.56.200", "fix": {"type": "block_port", "port": 21}})
+    assert r.status_code == 404 and META_IP in r.text
+
+
+def test_fix_preview_ignores_closed_ports(api, supa, scanned, viewer):
+    next(s for s in supa.rows("services") if s["port"] == 21)["state"] = "closed"
+    p = api.post("/fix-preview", headers=viewer["h"],
+                 json={"target_ip": META_IP, "fix": {"type": "block_port", "params": {"port": 21}}}).json()
+    assert p["unmatched"] == ["block_port 21"] and "Nothing matched" in p["note"]
+
+
+def test_topology_endpoint(api, scanned, viewer):
+    g = api.get("/topology", headers=viewer["h"]).json()
+    ids = {n["id"] for n in g["nodes"]}
+    assert f"host:{META_IP}" in ids and f"{META_IP}|21" in ids and f"{META_IP}|os" in ids
+    assert {"source": f"host:{META_IP}", "target": f"{META_IP}|21", "kind": "has"} in g["edges"]
+
+
+def test_set_importance(api, supa, scanned, admin, audit_actions):
+    body = {"asset_ip": META_IP, "importance": "Critical"}
+    r = api.post("/prioritization/importance", headers=admin["h"], json=body)
+    assert r.status_code == 200 and r.json() == {"ip": META_IP, "importance": "critical"}
+    assert supa.rows("assets")[0]["importance"] == "critical"
+    assert "prioritization.importance" in audit_actions()
+    t = api.get("/prioritization", headers=admin["h"]).json()
+    assert all(c["importance"] == "critical" for c in t["improved"]["components"])
+    assert api.post("/prioritization/importance", headers=admin["h"],
+                    json=dict(body, importance="vip")).status_code == 400
+    assert api.post("/prioritization/importance", headers=admin["h"],
                     json=dict(body, asset_ip="192.168.56.250")).status_code == 404
 
 
-def test_twin_changes_need_an_admin(api, supa, scanned):
-    viewer = supa.add("profiles", email="v@lab", role="viewer")
-    r = api.post("/twin/criticality", json={"admin_user_id": viewer["id"], "asset_ip": META_IP,
-                                            "criticality": "low"})
+def test_prioritization_changes_need_an_admin(api, supa, scanned, viewer):
+    r = api.post("/prioritization/importance", headers=viewer["h"],
+                 json={"asset_ip": META_IP, "importance": "low"})
     assert r.status_code == 403
-    r = api.post("/twin/dependency", json={"admin_user_id": viewer["id"],
-                                           "from_component": f"{META_IP}|21",
-                                           "to_component": f"{META_IP}|3306"})
+    r = api.post("/prioritization/dependency", headers=viewer["h"],
+                 json={"from_component": f"{META_IP}|21", "to_component": f"{META_IP}|3306"})
     assert r.status_code == 403
-    assert api.post("/twin/criticality", json={"admin_user_id": "nobody", "asset_ip": META_IP,
-                                               "criticality": "low"}).status_code == 404
-
-
-def test_twin_changes_without_cloud_are_503(api):
-    assert api.post("/twin/criticality", json={"admin_user_id": "a", "asset_ip": META_IP,
-                                               "criticality": "low"}).status_code == 503
+    # a user id written in the body is ignored: only the login counts
+    assert api.post("/prioritization/importance", json={
+        "admin_user_id": "someone", "asset_ip": META_IP, "importance": "low"}).status_code == 401
 
 
 def test_add_hide_and_remove_dependencies(api, supa, scanned, admin, audit_actions):
-    base = {"admin_user_id": admin["id"]}
-    ok = api.post("/twin/dependency", json=dict(base, from_component=f"{META_IP}|21",
-                                                to_component=f"{META_IP}|3306", rule="data",
-                                                note="ftp uploads go to the DB"))
+    h = admin["h"]
+    ok = api.post("/prioritization/dependency", headers=h, json={
+        "from_component": f"{META_IP}|21", "to_component": f"{META_IP}|3306", "rule": "data",
+        "note": "ftp uploads go to the DB"})
     assert ok.status_code == 200 and ok.json()["rule"] == "data"
-    t = api.get("/twin").json()
+    t = api.get("/prioritization", headers=h).json()
     manual = [d for d in t["improved"]["dependencies"] if d["source"] == "manual"]
     assert manual and manual[0]["from"] == f"{META_IP}|21"
     # the same pair again updates it (no duplicates)
-    api.post("/twin/dependency", json=dict(base, from_component=f"{META_IP}|21",
-                                           to_component=f"{META_IP}|3306", rule="network"))
-    assert len(supa.rows("twin_dependencies")) == 1
-    assert supa.rows("twin_dependencies")[0]["rule"] == "network"
+    api.post("/prioritization/dependency", headers=h, json={
+        "from_component": f"{META_IP}|21", "to_component": f"{META_IP}|3306", "rule": "network"})
+    assert len(supa.rows("component_dependencies")) == 1
+    assert supa.rows("component_dependencies")[0]["rule"] == "network"
     # hide an automatic one
-    api.post("/twin/dependency", json=dict(base, from_component=f"{META_IP}|21",
-                                           to_component=f"{META_IP}|os", rule="embedding",
-                                           enabled=False))
-    t = api.get("/twin").json()
+    api.post("/prioritization/dependency", headers=h, json={
+        "from_component": f"{META_IP}|21", "to_component": f"{META_IP}|os", "rule": "embedding",
+        "enabled": False})
+    t = api.get("/prioritization", headers=h).json()
     assert not any(d["from"] == f"{META_IP}|21" and d["to"] == f"{META_IP}|os"
                    for d in t["improved"]["dependencies"])
-    dep_id = supa.rows("twin_dependencies")[0]["id"]
-    assert api.post("/twin/dependency/remove",
-                    json=dict(base, id=dep_id)).json() == {"removed": 1}
-    assert {"twin.dependency", "twin.dependency.remove"} <= set(audit_actions())
+    dep_id = supa.rows("component_dependencies")[0]["id"]
+    assert api.post("/prioritization/dependency/remove", headers=h,
+                    json={"id": dep_id}).json() == {"removed": 1}
+    assert {"prioritization.dependency", "prioritization.dependency.remove"} <= set(audit_actions())
 
 
 @pytest.mark.parametrize("frm,to,rule", [
@@ -435,57 +546,71 @@ def test_add_hide_and_remove_dependencies(api, supa, scanned, admin, audit_actio
     (f"{META_IP}|21", f"{META_IP}|3306", "magic"),
 ])
 def test_bad_dependency_is_400(api, supa, scanned, admin, frm, to, rule):
-    r = api.post("/twin/dependency", json={"admin_user_id": admin["id"], "from_component": frm,
-                                           "to_component": to, "rule": rule})
+    r = api.post("/prioritization/dependency", headers=admin["h"],
+                 json={"from_component": frm, "to_component": to, "rule": rule})
     assert r.status_code == 400
 
 
 def test_dependency_before_migration_is_409(api, supa, scanned, admin):
-    supa.fail_tables.add("twin_dependencies")
-    r = api.post("/twin/dependency", json={"admin_user_id": admin["id"],
-                                           "from_component": f"{META_IP}|21",
-                                           "to_component": f"{META_IP}|3306"})
-    assert r.status_code == 409 and "005_digital_twin.sql" in r.text
+    supa.fail_tables.add("component_dependencies")
+    r = api.post("/prioritization/dependency", headers=admin["h"],
+                 json={"from_component": f"{META_IP}|21", "to_component": f"{META_IP}|3306"})
+    assert r.status_code == 409 and "006_proposal_alignment.sql" in r.text
 
 
-def _request_fix(api, supa, admin, action="block_port", params=None):
+def _request_fix(api, supa, user, action="block_port", params=None):
     t = next(t for t in supa.rows("tickets") if t["title"].startswith("Clear-text"))
-    r = api.post("/remediation/request", json={
+    r = api.post("/remediation/request", headers=user["h"], json={
         "ticket_id": t["id"], "asset_ip": META_IP, "action_type": action,
-        "params": params or {"port": 23}, "requested_by": admin["id"]})
-    assert r.status_code == 200
+        "params": params or {"port": 23}})
+    assert r.status_code == 200, r.text
     return r.json()["remediation"]["id"]
 
 
-def test_fix_request_stores_the_twin_prediction(api, supa, scanned, admin):
+def test_fix_request_stores_the_preview_for_the_approver(api, supa, scanned, admin):
     rid = _request_fix(api, supa, admin)
     row = next(r for r in supa.rows("remediations") if r["id"] == rid)
-    pred = row["twin_prediction"]
+    pred = row["fix_prediction"]
     assert pred["ip"] == META_IP and pred["closed_ports"] == [23]
     assert pred["fix"] == {"type": "block_port", "params": {"port": 23}}
-    assert "made_at" in pred
+    assert "made_at" in pred and row["requested_by"] == admin["id"]
 
 
-def test_fix_request_without_twin_columns_still_works(api, supa, scanned, admin, monkeypatch):
+def test_approval_stores_a_fresh_preview(api, supa, scanned, admin):
+    rid = _request_fix(api, supa, admin)
+    first = next(r for r in supa.rows("remediations") if r["id"] == rid)["fix_prediction"]
+    time.sleep(0.01)
+    r = api.post("/remediation/approve", headers=admin["h"],
+                 json={"remediation_id": rid, "totp_code": admin["code"]()})
+    assert r.status_code == 200
+    kept = next(x for x in supa.rows("remediations") if x["id"] == rid)["fix_prediction"]
+    assert kept["made_at"] > first["made_at"] and kept["closed_ports"] == [23]
+
+
+def test_fix_request_without_the_new_columns_still_works(api, supa, scanned, admin, monkeypatch):
     from tests import fakes
     real = fakes._Query.execute
 
     def no_column(self):
-        if self._table == "remediations" and self._op == "insert" and \
-                "twin_prediction" in (self._payload or {}):
-            raise RuntimeError("column twin_prediction does not exist")
+        if self._table == "remediations" and self._op in ("insert", "update") and \
+                "fix_prediction" in (self._payload or {}):
+            raise RuntimeError("column fix_prediction does not exist")
         return real(self)
     monkeypatch.setattr(fakes._Query, "execute", no_column)
     rid = _request_fix(api, supa, admin)
     row = next(r for r in supa.rows("remediations") if r["id"] == rid)
-    assert "twin_prediction" not in row and row["status"] == "dry_run"
+    assert "fix_prediction" not in row and row["status"] == "dry_run"
+    r = api.post("/remediation/approve", headers=admin["h"],
+                 json={"remediation_id": rid, "totp_code": admin["code"]()})
+    assert r.status_code == 200 and r.json()["status"] == "approved"
 
 
 def test_custom_action_gets_no_prediction(supa, scanned):
-    assert twin_store.prediction_for(supa, META_IP, "custom", {}) is None
-    assert twin_store.prediction_for(None, META_IP, "block_port", {"port": 21}) is None
+    assert prioritization_store.prediction_for(supa, META_IP, "custom", {}) is None
+    assert prioritization_store.prediction_for(None, META_IP, "block_port", {"port": 21}) is None
     # an unknown host is logged, never raised
-    assert twin_store.prediction_for(supa, "192.168.56.250", "block_port", {"port": 21}) is None
+    assert prioritization_store.prediction_for(supa, "192.168.56.250", "block_port",
+                                               {"port": 21}) is None
 
 
 def test_next_scan_checks_verified_predictions(api, supa, scanned, admin):
@@ -494,11 +619,11 @@ def test_next_scan_checks_verified_predictions(api, supa, scanned, admin):
         .eq("id", rid).execute()
     fresh = make_host()
     fresh["services"] = [s for s in fresh["services"] if s["port"] != 23]
-    assert twin_store.evaluate_pending([score_host(fresh)], supa) == 1
-    res = next(r for r in supa.rows("remediations") if r["id"] == rid)["twin_result"]
+    assert prioritization_store.evaluate_pending([score_host(fresh)], supa) == 1
+    res = next(r for r in supa.rows("remediations") if r["id"] == rid)["fix_check"]
     assert res["match"] is True and "checked_at" in res
-    assert twin_store.evaluate_pending([score_host(fresh)], supa) == 0   # checked only once
-    t = api.get("/twin").json()
+    assert prioritization_store.evaluate_pending([score_host(fresh)], supa) == 0   # only once
+    t = api.get("/prioritization", headers=admin["h"]).json()
     assert t["accuracy"]["checked"] == 1 and t["accuracy"]["accuracy_pct"] == 100.0
     assert t["recent_checks"][0]["remediation_id"] == rid
 
@@ -507,52 +632,57 @@ def test_wrong_prediction_counts_against_accuracy(api, supa, scanned, admin):
     rid = _request_fix(api, supa, admin, params={"port": 23})
     supa.table("remediations").update({"status": "succeeded", "verified_fixed": True}) \
         .eq("id", rid).execute()
-    assert twin_store.evaluate_pending([score_host(make_host())], supa) == 1  # 23 still open
-    res = next(r for r in supa.rows("remediations") if r["id"] == rid)["twin_result"]
+    assert prioritization_store.evaluate_pending([score_host(make_host())], supa) == 1
+    res = next(r for r in supa.rows("remediations") if r["id"] == rid)["fix_check"]
     assert res["match"] is False and res["misses"] == ["port 23 still open"]
-    assert api.get("/twin").json()["accuracy"]["accuracy_pct"] == 0.0
+    assert api.get("/prioritization", headers=admin["h"]).json()["accuracy"]["accuracy_pct"] == 0.0
+
+
+def test_old_version_1_prediction_is_still_checked(supa, scanned):
+    p = T.predict([score_host(make_host())], META_IP, {"type": "block_port", "params": {"port": 21}})
+    p["removed_findings"] = p.pop("removed_findings")         # how v13 stored it
+    r = T.check_prediction(p, [score_host(make_host())])
+    assert "CVE-2011-2523 still present" in r["misses"]
 
 
 def test_unverified_or_unscanned_fixes_are_not_checked(supa, scanned, admin, api):
     rid = _request_fix(api, supa, admin, params={"port": 23})
-    assert twin_store.evaluate_pending([score_host(make_host())], supa) == 0      # not run yet
+    assert prioritization_store.evaluate_pending([score_host(make_host())], supa) == 0
     supa.table("remediations").update({"status": "succeeded", "verified_fixed": False}) \
         .eq("id", rid).execute()
-    assert twin_store.evaluate_pending([score_host(make_host())], supa) == 0      # not verified
+    assert prioritization_store.evaluate_pending([score_host(make_host())], supa) == 0
     supa.table("remediations").update({"verified_fixed": True}).eq("id", rid).execute()
-    assert twin_store.evaluate_pending([], supa) == 0                              # host not scanned
-    assert twin_store.evaluate_pending([], None) == 0
+    assert prioritization_store.evaluate_pending([], supa) == 0
+    assert prioritization_store.evaluate_pending([], None) == 0
 
 
-def test_scan_runs_the_twin_check_and_never_breaks_it(lab, supa, monkeypatch):
+def test_scan_runs_the_prediction_check_and_never_breaks_it(lab, supa, monkeypatch):
     from scanner import engine
     seen = {}
 
     def fake_eval(hosts, client=None):
         seen["hosts"] = [h["ip"] for h in hosts]
         return 3
-    monkeypatch.setattr(twin_store, "evaluate_pending", fake_eval)
+    monkeypatch.setattr(prioritization_store, "evaluate_pending", fake_eval)
     r = engine.run_scan([META_IP])
-    assert seen["hosts"] == [META_IP] and r["meta"]["summary"]["twin_checked"] == 3
+    assert seen["hosts"] == [META_IP] and r["meta"]["summary"]["fix_checks"] == 3
 
     def boom(hosts, client=None):
-        raise RuntimeError("twin down")
-    monkeypatch.setattr(twin_store, "evaluate_pending", boom)
+        raise RuntimeError("model down")
+    monkeypatch.setattr(prioritization_store, "evaluate_pending", boom)
     r = engine.run_scan([META_IP])
-    assert r["meta"]["summary"]["live_hosts"] == 1 and "twin_checked" not in r["meta"]["summary"]
+    assert r["meta"]["summary"]["live_hosts"] == 1 and "fix_checks" not in r["meta"]["summary"]
 
 
-def test_end_to_end_predict_fix_rescan_and_score_the_twin(lab, supa, monkeypatch):
-    """The real chain: scan -> twin predicts each requested fix -> approve with
-    2FA -> worker fixes + verifies -> re-scan -> twin checks itself."""
+def test_end_to_end_preview_fix_rescan_and_check(lab, supa, monkeypatch):
+    """The real chain: scan -> preview of each requested fix -> approve with
+    2FA -> worker fixes + verifies -> re-scan -> each preview is checked."""
     from scanner import engine
     from soar import approval, remediation, worker
 
     engine.run_scan([META_IP])
     tickets = {t["title"].split(" (")[0]: t for t in supa.rows("tickets")}
-    secret = totp_2fa.new_secret()
-    adm = supa.add("profiles", email="admin@lab.local", role="admin",
-                   totp_secret=totp_2fa.seal_secret(secret), totp_enrolled=True)
+    adm = make_user(supa, "admin")
     monkeypatch.setattr(remediation, "run_remote",
                         lambda ip, cmds, check=True: [(c, 0, "ok") for c in cmds])
     monkeypatch.setattr(worker, "verify_fix", lambda ip, params, action: True)
@@ -560,19 +690,19 @@ def test_end_to_end_predict_fix_rescan_and_score_the_twin(lab, supa, monkeypatch
         act = tickets[title]["suggested_action"]
         rid = approval.create_request(tickets[title]["id"], META_IP, act["action_type"],
                                       act["params"], adm["id"])["remediation"]["id"]
-        approval.approve_and_arm(rid, adm, pyotp.TOTP(secret).now())
-    preds = [r["twin_prediction"] for r in supa.rows("remediations")]
+        approval.approve_and_arm(rid, dict(adm, totp_last_step=None), adm["code"]())
+    preds = [r["fix_prediction"] for r in supa.rows("remediations")]
     assert sorted(p["closed_ports"][0] for p in preds) == [21, 23]
     assert worker.run_once(supa) == 2
 
-    # ports 21 and 23 are really closed now -> the twin's predictions come true
+    # ports 21 and 23 are really closed now -> the predictions come true
     from tests.fakes import FakeNmap
     lab["nmap"] = FakeNmap({META_IP: dict(META_NMAP, tcp={22: META_NMAP["tcp"][22]})})
     r2 = engine.run_scan([META_IP])
-    assert r2["meta"]["summary"]["twin_checked"] == 2
-    results = [r["twin_result"] for r in supa.rows("remediations")]
+    assert r2["meta"]["summary"]["fix_checks"] == 2
+    results = [r["fix_check"] for r in supa.rows("remediations")]
     assert all(x["match"] for x in results), results
-    acc = twin_store.overview(supa)["accuracy"]
+    acc = prioritization_store.overview(supa)["accuracy"]
     assert acc["checked"] == 2 and acc["accuracy_pct"] == 100.0
 
 
@@ -583,9 +713,9 @@ def test_large_host_ranks_quickly(supa):
                   kev=i % 50 == 0) for i in range(500)]
     h = plain_host(services=services, vulns=vulns)
     t0 = time.time()
-    cands = twin_store.bounded_candidates([h])
+    cands = prioritization_store.bounded_candidates([h])
     ranked = T.rank_fixes([h], candidates=cands)
     base = T.rank_fixes([h], mode="baseline", candidates=cands)
     assert time.time() - t0 < 20
-    assert sum(1 for c in cands if c["fix"]["type"] == "patch_cve") == twin_store.MAX_PATCH_CANDIDATES
+    assert sum(1 for c in cands if c["fix"]["type"] == "patch_cve") == prioritization_store.MAX_PATCH_CANDIDATES
     assert ranked and base and len(ranked) <= 15

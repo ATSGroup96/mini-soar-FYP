@@ -81,7 +81,8 @@ export default function DashboardPage() {
         Number(b.confidence !== "version-unconfirmed") - Number(a.confidence !== "version-unconfirmed") ||
         (b.ml_risk_score || 0) - (a.ml_risk_score || 0)
     );
-    return sorted.filter((v) => (seen.has(v.cve_id) ? false : (seen.add(v.cve_id), true))).slice(0, 8);
+    const id = (v: any) => v.cve_id || v.finding_key || v.id;
+    return sorted.filter((v) => (seen.has(id(v)) ? false : (seen.add(id(v)), true))).slice(0, 8);
   }, [openVulns]);
   const sevData = ["critical", "high", "medium", "low", "info"].map((s) => ({
     sev: s,
@@ -203,7 +204,7 @@ export default function DashboardPage() {
             <table className="w-full">
               <thead>
                 <tr>
-                  <th className="th">CVE</th><th className="th">Sev</th><th className="th">CVSS</th>
+                  <th className="th">Finding</th><th className="th">Sev</th><th className="th">CVSS</th>
                   <th className="th">EPSS</th><th className="th">KEV</th><th className="th">ML risk</th>
                 </tr>
               </thead>
@@ -211,7 +212,10 @@ export default function DashboardPage() {
                 {topVulns.map((v) => (
                   <tr key={v.id}>
                     <td className="td font-mono text-accent">
-                      {v.cve_id}
+                      {v.cve_id || v.title || v.finding_key}
+                      {v.source && v.source !== "cve" && (
+                        <span className="ml-2 badge bg-info/20 text-info border border-info/40">{v.source}</span>
+                      )}
                       {v.confidence === "version-unconfirmed" && (
                         <span className="ml-2 badge bg-panel2 text-muted border border-edge">unconfirmed</span>
                       )}

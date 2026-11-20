@@ -80,6 +80,7 @@ export default function VulnPage() {
   const watch = useTable<any>("cve_watchlist", { orderBy: "created_at" });
   const watched = new Set(watch.rows.map((w) => w.cve_id));
   const [kevOnly, setKevOnly] = useState(false);
+  const [source, setSource] = useState("all");
   const [showClosed, setShowClosed] = useState(false);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<string | null>(null);
@@ -88,7 +89,8 @@ export default function VulnPage() {
     (v) =>
       (!kevOnly || v.in_kev) &&
       (showClosed || (v.status || "open") === "open") &&
-      (!q || v.cve_id?.toLowerCase().includes(q.toLowerCase()))
+      (source === "all" || (v.source || "cve") === source) &&
+      (!q || [v.cve_id, v.title, v.finding_key].some((x) => x?.toLowerCase().includes(q.toLowerCase())))
   );
 
   return (
@@ -100,10 +102,17 @@ export default function VulnPage() {
         <div className="flex gap-3 items-center">
           <input
             className="bg-panel border border-edge rounded-lg px-3 py-2 text-sm w-64"
-            placeholder="Search CVE…"
+            placeholder="Search CVE or finding…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
+          <select className="bg-panel border border-edge rounded-lg px-2 py-2 text-sm"
+            value={source} onChange={(e) => setSource(e.target.value)} title="Which tool found it">
+            <option value="all">all tools</option>
+            <option value="cve">Nmap + CVE match</option>
+            <option value="nuclei">Nuclei</option>
+            <option value="netexec">NetExec</option>
+          </select>
           <label className="flex items-center gap-2 text-sm text-muted">
             <input type="checkbox" checked={kevOnly} onChange={(e) => setKevOnly(e.target.checked)} />
             KEV only
@@ -119,7 +128,7 @@ export default function VulnPage() {
           <table className="w-full">
             <thead className="bg-panel2">
               <tr>
-                <th className="th">CVE</th><th className="th">Severity</th><th className="th">CVSS</th>
+                <th className="th">Finding</th><th className="th">Severity</th><th className="th">CVSS</th>
                 <th className="th">EPSS</th><th className="th">KEV</th><th className="th">ML risk</th><th className="th">Why</th>
               </tr>
             </thead>
@@ -128,7 +137,11 @@ export default function VulnPage() {
                 <Fragment key={v.id}>
                   <tr className="hover:bg-panel2/50 cursor-pointer" onClick={() => setOpen(open === v.id ? null : v.id)}>
                     <td className="td font-mono text-accent">
-                      {v.cve_id}
+                      {v.cve_id || v.title || v.finding_key}
+                      {v.source && v.source !== "cve" && (
+                        <span className="ml-2 badge bg-info/20 text-info border border-info/40"
+                          title={v.cve_id && v.title ? v.title : v.finding_key}>{v.source}</span>
+                      )}
                       {watched.has(v.cve_id) && (
                         <span className="ml-2 badge bg-accent/20 text-accent border border-accent/40">watchlist</span>
                       )}
@@ -150,6 +163,9 @@ export default function VulnPage() {
                     <tr>
                       <td className="td" colSpan={7}>
                         <div className="text-sm text-muted mb-2">{v.description || "No description."}</div>
+                        {v.evidence && (
+                          <div className="text-xs font-mono text-muted mb-2">Evidence: {v.evidence}</div>
+                        )}
                         {Array.isArray(v.ml_reasons) && v.ml_reasons.length > 0 && (
                           <div>
                             <div className="text-xs uppercase text-muted mb-1">Why this score (explainable AI)</div>
